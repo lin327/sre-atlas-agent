@@ -1,0 +1,38 @@
+rss:
+  - name: "Kubernetes Blog"
+    url: "https://kubernetes.io/feed.xml"
+    category: kubernetes
+  - name: "Docker Blog"
+    url: "https://www.docker.com/blog/feed/"
+    category: docker
+  - name: "Linux Weekly News"
+    url: "https://lwn.net/headlines/rss"
+    category: linux
+  - name: "CNCF Blog"
+    url: "https://www.cncf.io/blog/feed/"
+    category: kubernetes
+  - name: "Netflix Tech Blog"
+    url: "https://netflixtechblog.com/feed"
+    category: architecture
+  - name: "Google SRE"
+    url: "https://sre.google/sre-feed.xml"
+    category: sre
+
+github:
+  - repo: "kubernetes/kubernetes"
+    labels: ["kind/bug", "kind/feature"]
+    category: kubernetes
+  - repo: "containerd/containerd"
+    labels: ["kind/bug"]
+    category: docker
+  - repo: "etcd-io/etcd"
+    labels: ["type/bug"]
+    category: incidents
+
+docs:
+  - name: "Kubernetes Docs"
+    base_url: "https://kubernetes.io/docs/"
+    category: kubernetes
+  - name: "Docker Docs"
+    base_url: "https://docs.docker.com/"
+    category: docker
