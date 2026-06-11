@@ -1,91 +1,104 @@
 # SRE Atlas Agent
 
-Automated content collection agent that aggregates SRE and infrastructure knowledge from RSS feeds, GitHub repositories, and documentation sites. Collected content is analyzed with Claude and stored in PostgreSQL for downstream consumption.
+自动采集 SRE / 运维知识的 Agent，从 RSS、GitHub Issues、官方文档中聚合内容，经 Claude API 生成结构化 wiki 页面，存入 PostgreSQL 去重追踪。
 
-## Project Structure
+## 架构
+
+```
+数据源 → 采集器 → 去重 → LLM 生成 → 输出 .md 文件
+                     ↓
+              PostgreSQL（URL 去重 + 状态追踪）
+```
+
+## 项目结构
 
 ```
 sre-atlas-agent/
+├── agent/
+│   ├── collectors/
+│   │   ├── rss_collector.py      # RSS 采集（feedparser + 重试）
+│   │   └── github_collector.py   # GitHub Issues/PR（REST API + 分页）
+│   ├── generator.py              # Claude API 内容生成 + 质量门控
+│   ├── dedup.py                  # PostgreSQL 去重
+│   ├── scheduler.py              # 定时调度（默认 6 小时）
+│   └── main.py                   # CLI 入口
 ├── config/
-│   ├── sources.yaml      # Data source definitions (RSS, GitHub, docs)
-│   └── settings.py       # Application settings and constants
-├── .env.example           # Environment variable template
-├── requirements.txt       # Python dependencies
+│   ├── sources.yaml              # 数据源配置（6 RSS + 3 GitHub + 2 Docs）
+│   ├── settings.py               # 应用设置
+│   └── database.sql              # PostgreSQL schema（3 张表）
+├── requirements.txt
+├── .env.example
 └── README.md
 ```
 
-## Setup
-
-### 1. Create a virtual environment
+## 快速开始
 
 ```bash
+# 1. 创建虚拟环境
 python3 -m venv .venv
 source .venv/bin/activate
-```
 
-### 2. Install dependencies
-
-```bash
+# 2. 安装依赖
 pip install -r requirements.txt
-```
 
-### 3. Configure environment
-
-```bash
+# 3. 配置环境变量
 cp .env.example .env
-# Edit .env with your actual credentials
+# 编辑 .env 填入实际凭证
+
+# 4. 试运行（不写数据库）
+python -m agent.main --once --dry-run
+
+# 5. 正式运行
+python -m agent.main --once
+
+# 6. 持续运行（每 6 小时采集一次）
+python -m agent.main
 ```
 
-Required environment variables:
+## 环境变量
 
-| Variable | Description |
-|---|---|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `ANTHROPIC_API_KEY` | Claude API key for content analysis |
-| `GITHUB_TOKEN` | GitHub personal access token for API access |
+| 变量 | 说明 |
+|------|------|
+| `DATABASE_URL` | PostgreSQL 连接串 |
+| `ANTHROPIC_API_KEY` | Claude API key |
+| `GITHUB_TOKEN` | GitHub PAT（可选，提高 API 限流） |
 
-### 4. Set up the database
+## 数据源
 
-Create the target database:
+在 `config/sources.yaml` 中配置：
 
-```bash
-createdb sre_atlas
-```
+| 类型 | 当前源 | 说明 |
+|------|--------|------|
+| RSS | Kubernetes Blog, Docker Blog, CNCF, Netflix Tech Blog, Google SRE 等 | feedparser 解析 |
+| GitHub | kubernetes/kubernetes, containerd/containerd, etcd-io/etcd | Issues + PRs |
+| Docs | Kubernetes Docs, Docker Docs | 文档站点 |
 
-### 5. Configure sources
+## 输出
 
-Edit `config/sources.yaml` to add, remove, or modify data sources. Each source type supports multiple entries:
+- 生成的 wiki 页面写入 `output/` 目录
+- 格式：带 frontmatter 的 Markdown（与 SRE Atlas 前端兼容）
+- 包含 `[[wikilinks]]` 关联相关页面
 
-- **rss** -- RSS/Atom feed URLs with category tags
-- **github** -- Repositories filtered by issue labels
-- **docs** -- Documentation site base URLs for crawling
+## 配置项
 
-## Usage
+`config/settings.py` 中的关键设置：
 
-Run the collection agent:
+| 设置 | 默认值 | 说明 |
+|------|--------|------|
+| `MAX_ITEMS_PER_SOURCE` | 20 | 每个源每次最多采集条数 |
+| `COLLECTION_INTERVAL_HOURS` | 6 | 采集间隔（小时） |
+| `MIN_CONFIDENCE` | medium | 最低置信度阈值 |
+| `MIN_CONTENT_LENGTH` | 200 | 最低内容长度（字符） |
+| `CLAUDE_MODEL` | claude-sonnet-4-6 | 使用的 Claude 模型 |
 
-```bash
-python -m src.collector
-```
+## 数据库
 
-The agent will:
-1. Read source definitions from `config/sources.yaml`
-2. Fetch content from each source
-3. Analyze and classify content with Claude
-4. Store results in PostgreSQL
+PostgreSQL schema（`config/database.sql`）：
 
-## Configuration
+- `ingested_urls` — 已采集 URL 去重
+- `wiki_pages` — 已生成页面追踪
+- `source_health` — 数据源健康状态
 
-Key settings in `config/settings.py`:
+## 相关仓库
 
-| Setting | Default | Description |
-|---|---|---|
-| `MAX_ITEMS_PER_SOURCE` | 20 | Maximum items fetched per source per run |
-| `COLLECTION_INTERVAL_HOURS` | 6 | Hours between collection runs |
-| `MIN_CONFIDENCE` | `"medium"` | Minimum confidence threshold for stored content |
-| `MIN_CONTENT_LENGTH` | 200 | Minimum character length to keep an item |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model used for analysis |
-
-## License
-
-MIT
+- [sre-wiki](https://github.com/lin327/sre-wiki) — SRE Atlas 前端（Astro + React）
