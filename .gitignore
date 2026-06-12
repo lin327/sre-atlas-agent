@@ -1,4 +1,4 @@
-# environment
+# Environment
 .env
 .env.local
 
@@ -10,8 +10,17 @@ __pycache__/
 venv/
 *.egg-info/
 
-# output
+# Data (SQLite)
+data/
+
+# Output
 output/
+
+# Cache
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # IDE
 .idea/
@@ -22,6 +31,10 @@ output/
 # OS
 .DS_Store
 Thumbs.db
+._*
 
-# logs
+# Logs
 *.log
+
+# Tasks (Claude Code)
+.tasks/
