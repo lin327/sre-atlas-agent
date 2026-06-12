@@ -115,7 +115,7 @@ class RSSCollector:
             logger.error("Failed to load config %s: %s", self._config_path, exc)
             return []
 
-        sources = config.get("rss_sources", [])
+        sources = config.get("rss", [])
         if not isinstance(sources, list):
             logger.error("rss_sources must be a list in %s", self._config_path)
             return []

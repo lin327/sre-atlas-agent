@@ -127,7 +127,7 @@ class GitHubCollector:
             logger.error("Failed to load config %s: %s", self._config_path, exc)
             return []
 
-        sources = config.get("github_sources", [])
+        sources = config.get("github", [])
         if not isinstance(sources, list):
             logger.error("github_sources must be a list in %s", self._config_path)
             return []
