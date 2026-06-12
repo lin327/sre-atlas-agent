@@ -6,7 +6,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 
 # Database
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/sre_atlas")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/sre_atlas.db")
 
 # Claude API
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

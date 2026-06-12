@@ -75,7 +75,7 @@ class GitHubCollector:
                 continue
 
             labels = source.get("labels", [])
-            category = source.get("category", "github")
+            _category = source.get("category", "github")
 
             logger.info("Fetching issues from %s (labels=%s)", repo, labels)
             issues = self._fetch_issues(repo, labels=labels, since=since)

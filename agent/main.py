@@ -25,12 +25,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
+from agent.category_map import get_category  # noqa: F401
 from agent.dedup import Dedup, DeduplicationError
 from agent.scheduler import CollectionScheduler
 
@@ -155,7 +155,9 @@ class AtlasPipeline:
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         for page in generated_pages:
-            out_file = self._output_dir / f"{page.slug}.md"
+            category_dir = self._output_dir / page.category
+            category_dir.mkdir(parents=True, exist_ok=True)
+            out_file = category_dir / f"{page.slug}.mdx"
             out_file.write_text(page.content, encoding="utf-8")
             logger.debug("Wrote: %s", out_file)
 

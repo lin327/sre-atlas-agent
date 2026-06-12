@@ -2,8 +2,8 @@
 SRE Atlas Content Generator
 
 Takes collected items (from RSS/GitHub) and generates structured SRE
-documentation using the Claude API.  Output is Chinese-language markdown
-with English technical terms preserved, suitable for a wiki knowledge base.
+documentation using the Claude API.  Output is Chinese-language MDX
+with English technical terms preserved, suitable for an Astro wiki.
 """
 
 from __future__ import annotations
@@ -55,27 +55,34 @@ class GeneratedPage:
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """\
 你是一位资深 SRE（Site Reliability Engineering）技术文档撰写专家。
-你的任务是根据提供的原始资料，生成结构化的 SRE 技术知识页面。
+你的任务是根据提供的原始资料，生成结构化的 SRE 技术知识页面（MDX 格式）。
 
 ## 输出格式
 
-你 **必须** 以 YAML frontmatter 开头，紧接着是 Markdown 正文。
+你 **必须** 以 YAML frontmatter 开头，紧接着是 MDX 正文。
 
 ### Frontmatter 规范
 
 ```yaml
 ---
 title: <页面标题>
-created: <YYYY-MM-DD>
-updated: <YYYY-MM-DD>
-type: wiki
-tags: [tag1, tag2, ...]
+description: <一句话描述，不超过 100 字>
+category: <分类>
+order: 0
+lastUpdated: <YYYY-MM-DD>
+confidence: high | medium | low
 sources:
   - url: <来源URL>
     title: <来源标题>
-confidence: high | medium | low
+tags: [tag1, tag2, ...]
 ---
 ```
+
+**字段说明：**
+- `description`: 一句话概括页面内容，用于索引和 SEO
+- `category`: 使用提供的分类，不要自行创造新分类
+- `order`: 排序权重，默认 0
+- `lastUpdated`: 生成日期，格式 YYYY-MM-DD
 
 ### 正文规范
 
@@ -99,6 +106,7 @@ confidence: high | medium | low
 - 使用 wikilinks 引用相关页面：`[[related-slug]]`
 - 不要输出占位符文本（如 "待补充"、"TODO"、"lorem ipsum"）
 - 不要输出代码围栏包裹的 frontmatter（直接以 --- 开始）
+- 正文不能全是列表，必须包含至少 2 段落文本
 
 ### 置信度判定
 
