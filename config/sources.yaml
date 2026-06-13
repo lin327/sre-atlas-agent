@@ -1,0 +1,51 @@
+rss:
+  - name: "Kubernetes Blog"
+    url: "https://kubernetes.io/feed.xml"
+    category: kubernetes
+  - name: "Docker Blog"
+    url: "https://www.docker.com/blog/feed/"
+    category: docker
+  - name: "Linux Weekly News"
+    url: "https://lwn.net/headlines/rss"
+    category: linux
+  - name: "CNCF Blog"
+    url: "https://www.cncf.io/blog/feed/"
+    category: kubernetes
+  - name: "Netflix Tech Blog"
+    url: "https://netflixtechblog.com/feed"
+    category: architecture
+  - name: "Google SRE"
+    url: "https://sre.google/sre-feed.xml"
+    category: sre
+  - name: "AWS Architecture Blog"
+    url: "https://aws.amazon.com/blogs/architecture/feed/"
+    category: architecture
+  - name: "Grafana Blog"
+    url: "https://grafana.com/blog/index.xml"
+    category: monitoring
+  - name: "Chaos Mesh Blog"
+    url: "https://chaos-mesh.org/blog/rss.xml"
+    category: chaos
+  - name: "Prometheus Blog"
+    url: "https://prometheus.io/blog/feed.xml"
+    category: monitoring
+  - name: "Terraform Blog"
+    url: "https://www.hashicorp.com/blog/feed.xml"
+    category: infrastructure
+
+github:
+  - repo: "kubernetes/kubernetes"
+    labels: ["kind/bug", "kind/feature"]
+    category: kubernetes
+  - repo: "containerd/containerd"
+    labels: ["kind/bug"]
+    category: docker
+  - repo: "etcd-io/etcd"
+    labels: ["type/bug"]
+    category: incidents
+  - repo: "prometheus/prometheus"
+    labels: ["kind/bug"]
+    category: monitoring
+  - repo: "grafana/grafana"
+    labels: ["type/bug"]
+    category: monitoring

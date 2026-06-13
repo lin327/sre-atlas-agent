@@ -1,0 +1,45 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Data (SQLite)
+data/
+
+# Output
+output/
+output_en/
+
+# Translation scripts
+translate_mdx.py
+translate_mdx_optimized.py
+
+# Cache
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Logs
+*.log
+
+# Tasks (Claude Code)
+.tasks/
