@@ -122,7 +122,7 @@ tags: [tag1, tag2, ...]
 class ContentGenerator:
     """Generates structured SRE wiki pages from collected items via Claude API."""
 
-    DEFAULT_MODEL: str = "mimo-v2.5"
+    DEFAULT_MODEL: str = "claude-sonnet-4-6"
     MAX_RETRIES: int = 3
     BASE_BACKOFF: float = 2.0  # seconds
     RATE_LIMIT_DELAY: float = 1.2  # seconds between sequential calls
@@ -132,18 +132,8 @@ class ContentGenerator:
         *,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        base_url: Optional[str] = None,
     ) -> None:
-        from config.settings import ANTHROPIC_BASE_URL
-        effective_base_url = base_url or ANTHROPIC_BASE_URL or None
-        # Anthropic SDK appends /v1/messages automatically; strip trailing /v1
-        # if the user's base_url already includes it to avoid /v1/v1 duplication.
-        if effective_base_url and effective_base_url.rstrip("/").endswith("/v1"):
-            effective_base_url = effective_base_url.rstrip("/")[:-3]
-        self._client = anthropic.Anthropic(
-            api_key=api_key,
-            base_url=effective_base_url,
-        )
+        self._client = anthropic.Anthropic(api_key=api_key)
         self._model: str = model or self.DEFAULT_MODEL
 
     # ------------------------------------------------------------------

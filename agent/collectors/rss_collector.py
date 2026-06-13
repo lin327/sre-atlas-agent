@@ -38,7 +38,6 @@ class CollectedItem:
     content: str = ""
     content_type: str = "rss"  # rss, github, doc
     raw_data: dict = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
 
 
 class RSSCollector:

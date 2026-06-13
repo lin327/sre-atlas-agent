@@ -8,9 +8,6 @@ __pycache__
 .coverage
 data/
 output/
-output_en/
-translate_mdx.py
-translate_mdx_optimized.py
 .tasks/
 .DS_Store
 ._*
@@ -18,3 +15,10 @@ translate_mdx_optimized.py
 .env
 .env.local
 tests/
+
+# Output (English translation)
+output_en/
+
+# Translation scripts
+translate_mdx.py
+translate_mdx_optimized.py

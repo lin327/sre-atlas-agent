@@ -15,11 +15,6 @@ data/
 
 # Output
 output/
-output_en/
-
-# Translation scripts
-translate_mdx.py
-translate_mdx_optimized.py
 
 # Cache
 .pytest_cache/
@@ -43,3 +38,10 @@ Thumbs.db
 
 # Tasks (Claude Code)
 .tasks/
+
+# Output (English translation)
+output_en/
+
+# Translation scripts
+translate_mdx.py
+translate_mdx_optimized.py

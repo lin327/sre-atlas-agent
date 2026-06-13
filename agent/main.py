@@ -28,11 +28,6 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-
-# Load .env before anything else reads env vars (GitHub collector etc.)
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
 import yaml
 
 from agent.category_map import get_category  # noqa: F401
@@ -149,55 +144,22 @@ class AtlasPipeline:
             logger.info("No new items -- cycle complete.")
             return
 
-        # 3. Generate + 4. Write (incremental) ------------------------------
+        # 3. Generate ------------------------------------------------------
         logger.info("Step 3/5 -- Generating wiki pages via Claude API...")
         generator = ContentGenerator()
+        generated_pages: list[GeneratedPage] = generator.generate_batch(new_items)
+        logger.info("Generated %d page(s).", len(generated_pages))
+
+        # 4. Write output --------------------------------------------------
+        logger.info("Step 4/5 -- Writing output to %s...", self._output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        total = len(new_items)
-        written = 0
-        generated_pages: list[GeneratedPage] = []
 
-        for idx, item in enumerate(new_items, start=1):
-            logger.info("[%d/%d] Generating page for: %s", idx, total, item.title)
-            try:
-                page = generator.generate_page(item)
-            except Exception:
-                logger.exception("Unhandled error generating page for %r", item.title)
-                page = None
-
-            if page is not None:
-                category_dir = self._output_dir / page.category
-                category_dir.mkdir(parents=True, exist_ok=True)
-                out_file = category_dir / f"{page.slug}.mdx"
-                out_file.write_text(page.content, encoding="utf-8")
-                written += 1
-                generated_pages.append(page)
-                logger.info("[%d/%d] OK -- slug=%s confidence=%s  (wrote %s)", idx, total, page.slug, page.confidence, out_file)
-            else:
-                logger.info("[%d/%d] SKIPPED: %s", idx, total, item.title)
-
-            # Rate limiting
-            import time; time.sleep(1.2)
-
-            # 每50条保存一次进度
-            if len(generated_pages) % 50 == 0 and generated_pages:
-                logger.info("Step 5/5 -- Saving progress (%d pages so far)...", len(generated_pages))
-                if self._dedup and not self._dry_run:
-                    item_by_url_interim = {item.url: item for item in new_items}
-                    for page_batch in generated_pages[-50:]:
-                        source_item = item_by_url_interim.get(page_batch.source_url)
-                        try:
-                            self._dedup.mark_seen(
-                                url=page_batch.source_url,
-                                source=source_item.source if source_item else "unknown",
-                                category=page_batch.category,
-                                title=page_batch.title,
-                            )
-                        except Exception:
-                            logger.exception("Failed to mark seen: %s", page_batch.source_url)
-                    logger.info("Saved progress: %d pages", len(generated_pages))
-
-        logger.info("Generated %d page(s), wrote %d.", total, written)
+        for page in generated_pages:
+            category_dir = self._output_dir / page.category
+            category_dir.mkdir(parents=True, exist_ok=True)
+            out_file = category_dir / f"{page.slug}.mdx"
+            out_file.write_text(page.content, encoding="utf-8")
+            logger.debug("Wrote: %s", out_file)
 
         # 5. Mark seen -----------------------------------------------------
         logger.info("Step 5/5 -- Marking URLs as seen...")
