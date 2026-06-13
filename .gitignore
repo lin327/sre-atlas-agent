@@ -38,6 +38,7 @@ Thumbs.db
 
 # Tasks (Claude Code)
 .tasks/
+<<<<<<< HEAD
 
 # Output (English translation)
 output_en/
@@ -45,3 +46,5 @@ output_en/
 # Translation scripts
 translate_mdx.py
 translate_mdx_optimized.py
+=======
+>>>>>>> 3b0041452100887d4b19f7305776201aa46058f4
