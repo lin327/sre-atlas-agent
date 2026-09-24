@@ -14,9 +14,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import requests
 import yaml
@@ -36,7 +35,7 @@ class GitHubCollector:
 
     Config format (sources.yaml)::
 
-        github_sources:
+        github:
           - repo: owner/repo-name
             labels:
               - bug
@@ -44,7 +43,7 @@ class GitHubCollector:
             category: incidents
     """
 
-    def __init__(self, config_path: Optional[Path] = None, token: Optional[str] = None) -> None:
+    def __init__(self, config_path: Path | None = None, token: str | None = None) -> None:
         self._config_path = config_path or _DEFAULT_CONFIG_PATH
         self._token = token or os.environ.get("GITHUB_TOKEN")
         self._session = self._build_session()
@@ -65,7 +64,7 @@ class GitHubCollector:
             logger.warning("No GitHub sources configured in %s", self._config_path)
             return []
 
-        since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        since = datetime.now(UTC) - timedelta(days=lookback_days)
         items: list[CollectedItem] = []
 
         for source in sources:
@@ -75,10 +74,10 @@ class GitHubCollector:
                 continue
 
             labels = source.get("labels", [])
-            _category = source.get("category", "github")
+            category = source.get("category", "")
 
             logger.info("Fetching issues from %s (labels=%s)", repo, labels)
-            issues = self._fetch_issues(repo, labels=labels, since=since)
+            issues = self._fetch_issues(repo, labels=labels, since=since, category=category)
             for issue in issues:
                 if issue.url in self._seen_urls:
                     logger.debug("Skipping duplicate URL: %s", issue.url)
@@ -129,7 +128,7 @@ class GitHubCollector:
 
         sources = config.get("github", [])
         if not isinstance(sources, list):
-            logger.error("github_sources must be a list in %s", self._config_path)
+            logger.error("github must be a list in %s", self._config_path)
             return []
 
         return sources
@@ -140,6 +139,7 @@ class GitHubCollector:
         *,
         labels: list[str],
         since: datetime,
+        category: str,
     ) -> list[CollectedItem]:
         """Fetch paginated issues for a single repository.
 
@@ -173,7 +173,7 @@ class GitHubCollector:
                 break
 
             for issue in data:
-                item = self._issue_to_item(issue, repo=repo)
+                item = self._issue_to_item(issue, repo=repo, category=category)
                 items.append(item)
 
             # Stop if we've gone past the lookback window or hit the last page.
@@ -189,7 +189,7 @@ class GitHubCollector:
         url: str,
         params: dict,
         max_retries: int = 3,
-    ) -> Optional[requests.Response]:
+    ) -> requests.Response | None:
         """Issue a GET request with exponential backoff and rate-limit handling."""
         backoff = 2.0
 
@@ -247,7 +247,7 @@ class GitHubCollector:
                 )
 
     @staticmethod
-    def _issue_to_item(issue: dict, *, repo: str) -> CollectedItem:
+    def _issue_to_item(issue: dict, *, repo: str, category: str) -> CollectedItem:
         """Convert a GitHub issue JSON object to a ``CollectedItem``."""
         title = issue.get("title", "(untitled)")
         url = issue.get("html_url", "")
@@ -258,7 +258,7 @@ class GitHubCollector:
         created_at = None
         if created_at_str:
             try:
-                created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                created_at = datetime.fromisoformat(created_at_str)
             except (ValueError, TypeError):
                 pass
 
@@ -270,7 +270,7 @@ class GitHubCollector:
             title=title,
             url=url,
             source=repo,
-            category="github",
+            category=category,
             published=created_at,
             summary=body[:300] if body else "",
             content=body,

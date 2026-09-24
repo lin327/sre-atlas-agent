@@ -5,17 +5,46 @@ on:
   # schedule:
   #   - cron: "0 */6 * * *"
   workflow_dispatch:
+    inputs:
+      initialize_db:
+        description: "仅首次运行：允许新建去重库（会调用付费 API）"
+        type: boolean
+        default: false
+      restore_run_id:
+        description: "缓存丢失时，填写最近含 dedup-db artifact 的运行 ID"
+        type: string
+        default: ""
+      restore_attempt:
+        description: "恢复运行的 attempt 编号（对应 dedup-db-N）"
+        type: string
+        default: "1"
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: collect-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   collect:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    env:
+      DATABASE_PATH: data/sre_atlas.db
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require API key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+            echo "::error::缺少 ANTHROPIC_API_KEY，停止采集。"
+            exit 1
+          fi
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -34,18 +63,109 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore dedup database from cache
+        if: ${{ inputs.restore_run_id == '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/sre_atlas.db
+          key: dedup-v1-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dedup-v1-${{ github.ref }}-
+
+      - name: Restore dedup database from artifact
+        if: ${{ inputs.restore_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: dedup-db-${{ inputs.restore_attempt }}
+          path: ${{ runner.temp }}/dedup-restore
+          run-id: ${{ inputs.restore_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify dedup database before spending
+        id: database
+        env:
+          INITIALIZE_DB: ${{ inputs.initialize_db }}
+          RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import sqlite3
+          from pathlib import Path
+          from agent.dedup import Dedup
+
+          path = Path(os.environ["DATABASE_PATH"])
+          if os.environ["RESTORE_RUN_ID"]:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(Path(os.environ["RUNNER_TEMP"]) / "dedup-restore/data/sre_atlas.db", path)
+          if not path.is_file():
+              if os.environ["INITIALIZE_DB"] != "true":
+                  raise SystemExit("去重库未恢复，停止采集。请用 restore_run_id 恢复；仅首次运行可选 initialize_db。")
+              print("::warning::首次初始化空去重库；新内容会调用付费 API。")
+              Dedup(str(path))
+          with sqlite3.connect(f"file:{path}?mode=rw", uri=True) as db:
+              if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                  raise SystemExit("去重库损坏，停止采集。")
+              count = db.execute("SELECT COUNT(*) FROM ingested_urls").fetchone()[0]
+          print(f"去重库已就绪，已记录 {count} 个 URL。")
+          PY
+
       - name: Run agent (single cycle)
+        id: generate
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISH_CANONICAL: "false"
         run: |
           python -m agent.main --once --output output/
 
-      - name: Upload generated pages
-        if: always()
+      - name: Require inbox drafts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          pages = [p for p in Path("output/inbox").rglob("*.mdx") if p.is_file() and p.stat().st_size]
+          if not pages:
+              raise SystemExit("output/inbox/ 没有 MDX 草稿：可能无新内容或全部被质量门跳过，不能报成功。")
+          print(f"本次生成 {len(pages)} 篇 inbox 草稿。")
+          PY
+
+      - name: Checkpoint dedup database
+        id: snapshot
+        if: ${{ always() && steps.database.outcome == 'success' }}
+        run: |
+          python - <<'PY'
+          import os
+          import sqlite3
+          with sqlite3.connect(f"file:{os.environ['DATABASE_PATH']}?mode=rw", uri=True) as db:
+              if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                  raise SystemExit("去重库损坏，不保存快照。")
+              if db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
+                  raise SystemExit("WAL checkpoint 失败，不保存不完整快照。")
+          PY
+
+      - name: Back up dedup database and drafts together
+        id: backup
+        if: ${{ always() && steps.snapshot.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: inbox-drafts
+          name: dedup-db-${{ github.run_attempt }}
+          path: |
+            data/sre_atlas.db
+            output/inbox/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Save dedup database
+        if: ${{ always() && steps.backup.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/sre_atlas.db
+          key: dedup-v1-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload generated pages
+        if: ${{ always() && steps.database.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: inbox-drafts-${{ github.run_attempt }}
           path: output/inbox/
           retention-days: 30
-          if-no-files-found: ignore
+          if-no-files-found: error
