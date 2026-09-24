@@ -24,7 +24,7 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "centos", "debian", "rhel", "systemctl", "journalctl", "iptables",
         "selinux", "apparmor",
     ],
-    "architecture": [
+    "architectures": [
         "microservice", "monolith", "distributed", "scalability", "load balancing",
         "service mesh", "api gateway", "event-driven", "cqrs", "event sourcing",
         "circuit breaker", "retry", "timeout",
@@ -33,7 +33,7 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "incident", "outage", "postmortem", "rca", "root cause", "blameless",
         "escalation", "oncall", "on-call", "pager", "alert",
     ],
-    "runbook": [
+    "runbooks": [
         "runbook", "playbook", "procedure", "checklist", "troubleshooting",
         "debug", "diagnostic", "health check",
     ],
@@ -46,10 +46,14 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 # Allowed categories (including default)
 # ---------------------------------------------------------------------------
-ALLOWED_CATEGORIES: set[str] = set(CATEGORY_KEYWORDS.keys()) | {"runbook"}
+ALLOWED_CATEGORIES: set[str] = set(CATEGORY_KEYWORDS)
+CATEGORY_ALIASES: dict[str, str] = {
+    "runbook": "runbooks",
+    "architecture": "architectures",
+}
 
 # Default category when no keywords match
-DEFAULT_CATEGORY: str = "runbook"
+DEFAULT_CATEGORY: str = "runbooks"
 
 
 def classify_item(title: str, tags: list[str] | None = None) -> str:
@@ -96,4 +100,5 @@ def validate_category(category: str) -> str:
     ``DEFAULT_CATEGORY``.
     """
     normalized = category.lower().strip()
+    normalized = CATEGORY_ALIASES.get(normalized, normalized)
     return normalized if normalized in ALLOWED_CATEGORIES else DEFAULT_CATEGORY

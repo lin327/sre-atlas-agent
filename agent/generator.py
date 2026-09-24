@@ -11,27 +11,18 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import anthropic
+import yaml
 
-# ---------------------------------------------------------------------------
-# CollectedItem import -- graceful fallback for standalone testing
-# ---------------------------------------------------------------------------
-try:
-    from collectors.base import CollectedItem
-except ImportError:
-    @dataclass
-    class CollectedItem:  # type: ignore[no-redef]
-        """Fallback stub so this module can be tested independently."""
-        title: str
-        url: str
-        content: str
-        source: str = ""
-        tags: list[str] = field(default_factory=list)
-        published: Optional[str] = None
-
+from agent.category_map import (
+    ALLOWED_CATEGORIES,
+    CATEGORY_ALIASES,
+    classify_item,
+    validate_category,
+)
+from agent.collectors.rss_collector import CollectedItem
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +59,8 @@ SYSTEM_PROMPT = """\
 title: <页面标题>
 description: <一句话描述，不超过 100 字>
 category: <分类>
+canonical: false
+type: concept | fundamental | runbook | architecture | incident | comparison
 order: 0
 lastUpdated: <YYYY-MM-DD>
 confidence: high | medium | low
@@ -81,6 +74,8 @@ tags: [tag1, tag2, ...]
 **字段说明：**
 - `description`: 一句话概括页面内容，用于索引和 SEO
 - `category`: 使用提供的分类，不要自行创造新分类
+- `canonical`: 固定为 false，生成内容需人工审核
+- `type`: 内容类型；目录使用 runbooks / architectures，类型使用 runbook / architecture
 - `order`: 排序权重，默认 0
 - `lastUpdated`: 生成日期，格式 YYYY-MM-DD
 
@@ -130,8 +125,8 @@ class ContentGenerator:
     def __init__(
         self,
         *,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
+        api_key: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model: str = model or self.DEFAULT_MODEL
@@ -139,12 +134,15 @@ class ContentGenerator:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def generate_page(self, item: CollectedItem) -> Optional[GeneratedPage]:
+    def generate_page(self, item: CollectedItem) -> GeneratedPage | None:
         """Generate a single wiki page from a CollectedItem.
 
         Returns ``None`` when generation fails or the quality gate rejects
         the output.
         """
+        if _ISSUE_TITLE.search(item.title.strip()):
+            logger.warning("Skipping Issue-like source title: %r", item.title)
+            return None
         raw = self._call_claude(item)
         if raw is None:
             return None
@@ -210,7 +208,7 @@ class ContentGenerator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _call_claude(self, item: CollectedItem) -> Optional[str]:
+    def _call_claude(self, item: CollectedItem) -> str | None:
         """Send a generation request to the Claude API with retries."""
         user_prompt = self._build_user_prompt(item)
 
@@ -273,6 +271,7 @@ class ContentGenerator:
             "请根据以下资料生成一篇 SRE 技术知识页面。\n",
             f"## 原始标题\n{item.title}\n",
             f"## 来源 URL\n{item.url}\n",
+            f"## 指定分类\n{_item_category(item)}\n",
         ]
 
         if item.source:
@@ -291,17 +290,27 @@ class ContentGenerator:
     @staticmethod
     def _parse_output(raw: str, item: CollectedItem) -> GeneratedPage:
         """Extract structured fields from the generated markdown."""
-        title = _extract_frontmatter_field(raw, "title") or item.title
-        confidence = (
-            _extract_frontmatter_field(raw, "confidence") or "medium"
-        )
-        category = _extract_category(raw)
+        metadata, body = _split_frontmatter(raw)
+        title = metadata.get("title") or item.title
+        confidence = str(metadata.get("confidence", "medium")).lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "low"
+        category = _item_category(item)
         slug = _slugify(title)
+        page_type = metadata.get("type")
+        if page_type not in ("concept", "fundamental", "runbook", "architecture", "incident", "comparison"):
+            page_type = {
+                "runbooks": "runbook", "architectures": "architecture",
+                "incidents": "incident", "comparisons": "comparison",
+            }.get(category, "concept")
+        metadata.update(title=title, category=category, canonical=False,
+                        type=page_type, confidence=confidence)
+        content = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False) + "---\n" + body
 
         return GeneratedPage(
             slug=slug,
             title=title,
-            content=raw,
+            content=content,
             category=category,
             confidence=confidence,
             source_url=item.url,
@@ -313,6 +322,14 @@ class ContentGenerator:
 # ---------------------------------------------------------------------------
 # Minimum character count for the markdown body (excluding frontmatter).
 _MIN_BODY_LENGTH: int = 200
+_VALID_SLUG = re.compile(r"[a-z0-9][a-z0-9-]{2,58}[a-z0-9]")
+_ISSUE_TITLE = re.compile(
+    r"\b(?:issues?|flaky|bugfix|bug)\b|#\d+\b|^bugfix"
+    r"|^(?:fix|fixes)\b|^\[(?:fix|feature request)\]"
+    r"|^(?:feat|chore|test|ci|docs|refactor)(?:\([^)]*\))?!?\s*[:：]"
+    r"|修复|不稳定测试|测试(?:失败|不稳定)",
+    re.IGNORECASE,
+)
 
 # Patterns that indicate unfinished / placeholder content.
 _PLACEHOLDER_PATTERNS: list[re.Pattern[str]] = [
@@ -325,7 +342,7 @@ _PLACEHOLDER_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def validate_content(raw: str) -> tuple[bool, list[str]]:
+def validate_content(raw: str, *, slug: str | None = None) -> tuple[bool, list[str]]:
     """Validate generated content against quality criteria.
 
     Returns ``(is_valid, list_of_issues)`` where *list_of_issues* is empty
@@ -333,28 +350,20 @@ def validate_content(raw: str) -> tuple[bool, list[str]]:
     """
     issues: list[str] = []
 
-    # 1. Must start with frontmatter delimiters.
-    stripped = raw.lstrip()
-    if not stripped.startswith("---"):
-        issues.append("Missing YAML frontmatter (must start with ---)")
-        # Cannot reliably check further without frontmatter.
-        return False, issues
-
-    # 2. Must have a closing --- for the frontmatter block.
-    second_delim = stripped.find("---", 3)
-    if second_delim == -1:
-        issues.append("Frontmatter block is not closed (missing second ---)")
-        return False, issues
-
-    frontmatter = stripped[3:second_delim].strip()
-
-    # 3. Must contain a non-empty title field.
-    title_match = re.search(r"^title:\s*(.+)$", frontmatter, re.MULTILINE)
-    if not title_match or not title_match.group(1).strip():
+    try:
+        metadata, body = _split_frontmatter(raw)
+    except (ValueError, TypeError) as exc:
+        return False, [str(exc)]
+    title = metadata.get("title")
+    if not isinstance(title, str) or not title.strip():
         issues.append("Frontmatter is missing a 'title' field or title is empty")
-
-    # 4. Extract body (everything after the second ---).
-    body = stripped[second_delim + 3 :].strip()
+    else:
+        if _ISSUE_TITLE.search(title.strip()):
+            issues.append("Title resembles a GitHub Issue")
+        candidate = _slugify(title) if slug is None else slug
+        if not _VALID_SLUG.fullmatch(candidate) or _slugify(candidate) != candidate:
+            issues.append("Invalid slug: expected [a-z0-9-]{4,60}")
+    body = body.strip()
 
     # 5. Body must exist and meet minimum length.
     if not body:
@@ -370,40 +379,45 @@ def validate_content(raw: str) -> tuple[bool, list[str]]:
         if pattern.search(body):
             issues.append(f"Placeholder text detected: {pattern.pattern!r}")
 
+    prose = re.sub(r"```.*?```|~~~.*?~~~|`[^`\n]*`|<!--.*?-->", "", body, flags=re.DOTALL)
+    if not re.search(r"\[\[[a-z0-9-]{4,60}(?:\|[^\]\n]+)?\]\]", prose):
+        issues.append("Body has no wikilink")
+
     return (len(issues) == 0), issues
 
 
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
-def _extract_frontmatter_field(raw: str, field_name: str) -> Optional[str]:
-    """Pull a single scalar value from YAML frontmatter."""
+def _split_frontmatter(raw: str) -> tuple[dict, str]:
+    """Parse YAML once per validation/normalization, preserving the body."""
     match = re.search(
-        rf"^---\s*\n.*?^{field_name}:\s*(.+?)\s*$.*?^---",
-        raw,
-        re.MULTILINE | re.DOTALL,
+        r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)(.*)\Z",
+        raw.lstrip(), re.DOTALL,
     )
-    if match:
-        value = match.group(1).strip().strip("\"'")
-        return value if value else None
-    return None
+    if not match:
+        raise ValueError("Missing or unclosed YAML frontmatter")
+    try:
+        metadata = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as exc:
+        raise ValueError("Invalid YAML frontmatter") from exc
+    if not isinstance(metadata, dict):
+        raise TypeError("YAML frontmatter must be a mapping")
+    return metadata, match.group(2)
 
 
-def _extract_category(raw: str) -> str:
-    """Derive a category from the first H2 heading in the body."""
-    # Skip frontmatter.
-    match = re.search(r"^---\s*\n.*?^---", raw, re.MULTILINE | re.DOTALL)
-    body = raw[match.end() :] if match else raw
-
-    heading = re.search(r"^##\s+(.+)$", body, re.MULTILINE)
-    return heading.group(1).strip() if heading else "general"
+def _item_category(item: CollectedItem) -> str:
+    """Prefer a recognized source category; never trust generated headings."""
+    category = str(getattr(item, "category", "") or "").strip().lower()
+    if category in ALLOWED_CATEGORIES or category in CATEGORY_ALIASES:
+        return validate_category(category)
+    return classify_item(item.title, item.tags)
 
 
 def _slugify(text: str) -> str:
     """Convert a title into a URL/wiki-friendly slug."""
-    # Preserve CJK characters, replace spaces/punctuation with hyphens.
     text = text.lower().strip()
-    text = re.sub(r"[\s/_]+", "-", text)
-    text = re.sub(r"[^\w一-鿿-]", "", text)
+    text = re.sub(r"[^a-z0-9-]+", "-", text)
+    text = re.sub(r"\b(?:issues?|flaky|bugfix)\b", "", text)
     text = re.sub(r"-{2,}", "-", text)
-    return text.strip("-") or "untitled"
+    return text.strip("-")

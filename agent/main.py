@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
-from agent.category_map import get_category  # noqa: F401
+from agent.category_map import ALLOWED_CATEGORIES
 from agent.dedup import Dedup, DeduplicationError
 from agent.scheduler import CollectionScheduler
 
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 def load_config(path: str) -> dict[str, Any]:
     """Load and validate a ``sources.yaml`` file.
 
-    Raises ``FileNotFoundError`` or ``ValueError`` on problems.
+    Raises ``FileNotFoundError`` or ``TypeError`` on problems.
     """
     config_path = Path(path)
     if not config_path.exists():
@@ -58,7 +59,7 @@ def load_config(path: str) -> dict[str, Any]:
         data = yaml.safe_load(fh)
 
     if not isinstance(data, dict):
-        raise ValueError("Config must be a YAML mapping.")
+        raise TypeError("Config must be a YAML mapping.")
 
     return data
 
@@ -77,7 +78,7 @@ class AtlasPipeline:
     config_path : str
         Path to the YAML config file (passed to collectors that self-load).
     output_dir : str
-        Directory where generated ``.md`` files are written.
+        Output root; drafts go under ``inbox/`` unless PUBLISH_CANONICAL=true.
     dry_run : bool
         When *True*, skip all database writes.
     dedup : Dedup | None
@@ -90,11 +91,16 @@ class AtlasPipeline:
         config_path: str = "config/sources.yaml",
         output_dir: str = "output",
         dry_run: bool = False,
-        dedup: Optional[Dedup] = None,
+        dedup: Dedup | None = None,
     ) -> None:
         self._config = config
         self._config_path = Path(config_path)
         self._output_dir = Path(output_dir)
+        if os.getenv("PUBLISH_CANONICAL", "false") != "true":
+            parts = self._output_dir.resolve().parts
+            if any(parts[i:i + 2] == ("src", "pages") for i in range(len(parts) - 1)):
+                raise ValueError("Draft output must not be under src/pages; use output/ instead.")
+            self._output_dir /= "inbox"
         self._dry_run = dry_run
         self._dedup = dedup
 
@@ -104,9 +110,9 @@ class AtlasPipeline:
 
     def run(self) -> None:
         """Execute the full pipeline."""
-        from agent.collectors.rss_collector import RSSCollector, CollectedItem
         from agent.collectors.github_collector import GitHubCollector
-        from agent.generator import ContentGenerator, GeneratedPage
+        from agent.collectors.rss_collector import CollectedItem, RSSCollector
+        from agent.generator import ContentGenerator, GeneratedPage, validate_content
 
         # 1. Collect -------------------------------------------------------
         logger.info("Step 1/5 -- Collecting items...")
@@ -154,11 +160,22 @@ class AtlasPipeline:
         logger.info("Step 4/5 -- Writing output to %s...", self._output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
+        written_pages: list[GeneratedPage] = []
         for page in generated_pages:
+            valid, issues = validate_content(page.content, slug=page.slug)
+            if not valid or page.category not in ALLOWED_CATEGORIES:
+                logger.warning("Skipping invalid output %r (%s): %s", page.slug, page.category, issues)
+                continue
             category_dir = self._output_dir / page.category
             category_dir.mkdir(parents=True, exist_ok=True)
             out_file = category_dir / f"{page.slug}.mdx"
-            out_file.write_text(page.content, encoding="utf-8")
+            try:
+                with out_file.open("x", encoding="utf-8") as fh:
+                    fh.write(page.content)
+            except FileExistsError:
+                logger.warning("Skipping existing output: %s", out_file)
+                continue
+            written_pages.append(page)
             logger.debug("Wrote: %s", out_file)
 
         # 5. Mark seen -----------------------------------------------------
@@ -168,7 +185,7 @@ class AtlasPipeline:
             item_by_url: dict[str, CollectedItem] = {
                 item.url: item for item in new_items
             }
-            for page in generated_pages:
+            for page in written_pages:
                 source_item = item_by_url.get(page.source_url)
                 try:
                     self._dedup.mark_seen(
@@ -182,7 +199,7 @@ class AtlasPipeline:
         elif self._dry_run:
             logger.info("[dry-run] Skipping database writes.")
 
-        logger.info("Cycle complete -- %d new page(s) written.", len(generated_pages))
+        logger.info("Cycle complete -- %d new page(s) written.", len(written_pages))
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default="output",
-        help="Directory for generated wiki pages (default: output/).",
+        help="Output root (default: output/); drafts use inbox/ unless PUBLISH_CANONICAL=true.",
     )
     parser.add_argument(
         "--interval",
@@ -246,12 +263,12 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         logger.error("%s", exc)
         return 1
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         logger.error("Invalid config: %s", exc)
         return 1
 
     # Initialise dedup ------------------------------------------------------
-    dedup: Optional[Dedup] = None
+    dedup: Dedup | None = None
     if not args.dry_run:
         try:
             dedup = Dedup()
@@ -262,13 +279,17 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("[dry-run] Database connection skipped.")
 
     # Build pipeline --------------------------------------------------------
-    pipeline = AtlasPipeline(
-        config=config,
-        config_path=args.config,
-        output_dir=args.output,
-        dry_run=args.dry_run,
-        dedup=dedup,
-    )
+    try:
+        pipeline = AtlasPipeline(
+            config=config,
+            config_path=args.config,
+            output_dir=args.output,
+            dry_run=args.dry_run,
+            dedup=dedup,
+        )
+    except ValueError as exc:
+        logger.error("Invalid output configuration: %s", exc)
+        return 1
 
     if args.once:
         pipeline.run()
