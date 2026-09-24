@@ -1,9 +1,9 @@
 name: Collect & Generate
 
 on:
-  schedule:
-    # Every 6 hours at :00
-    - cron: "0 */6 * * *"
+  # 暂停定时采集；持久化去重状态后再评估恢复。
+  # schedule:
+  #   - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   collect:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +37,7 @@ jobs:
       - name: Run agent (single cycle)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PUBLISH_CANONICAL: "false"
         run: |
           python -m agent.main --once --output output/
 
@@ -43,7 +45,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: generated-pages
-          path: output/
+          name: inbox-drafts
+          path: output/inbox/
           retention-days: 30
           if-no-files-found: ignore

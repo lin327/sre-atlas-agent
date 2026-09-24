@@ -13,10 +13,10 @@ rss:
     category: kubernetes
   - name: "Netflix Tech Blog"
     url: "https://netflixtechblog.com/feed"
-    category: architecture
+    category: architectures
   - name: "Google SRE"
     url: "https://sre.google/sre-feed.xml"
-    category: sre
+    category: runbooks
 
 github:
   - repo: "kubernetes/kubernetes"
@@ -28,11 +28,3 @@ github:
   - repo: "etcd-io/etcd"
     labels: ["type/bug"]
     category: incidents
-
-docs:
-  - name: "Kubernetes Docs"
-    base_url: "https://kubernetes.io/docs/"
-    category: kubernetes
-  - name: "Docker Docs"
-    base_url: "https://docs.docker.com/"
-    category: docker

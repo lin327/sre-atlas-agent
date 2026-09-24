@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-m", "agent.main"]
+CMD ["python", "-m", "agent.main", "--once"]
