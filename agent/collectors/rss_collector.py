@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import feedparser
+import requests
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,9 @@ _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" 
 _MAX_RETRIES = 3
 _INITIAL_BACKOFF_SECONDS = 2.0
 _BACKOFF_MULTIPLIER = 2.0
+_REQUEST_TIMEOUT = (5, 15)
+_MAX_FEED_BYTES = 5 * 1024 * 1024
+_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass
@@ -133,7 +137,7 @@ class RSSCollector:
         return sources
 
     def _fetch_feed(self, url: str, name: str) -> feedparser.FeedParserDict | None:
-        """Fetch an RSS feed with exponential-backoff retry.
+        """Fetch a bounded RSS response with timeouts and exponential retry.
 
         Returns the parsed feed on success, or ``None`` after persistent
         failure.
@@ -142,7 +146,7 @@ class RSSCollector:
 
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                feed = feedparser.parse(url)
+                feed = self._download_feed(url)
 
                 # feedparser sets 'bozo' to 1 when there was a parse error
                 # but still populates entries when possible.
@@ -156,7 +160,7 @@ class RSSCollector:
                 )
                 return feed
 
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, requests.RequestException) as exc:
                 logger.warning(
                     "Attempt %d/%d failed for %s: %s",
                     attempt,
@@ -171,6 +175,36 @@ class RSSCollector:
 
         logger.error("All %d attempts failed for %s — skipping", _MAX_RETRIES, name)
         return None
+
+    @staticmethod
+    def _download_feed(url: str) -> feedparser.FeedParserDict:
+        """Download at most ``_MAX_FEED_BYTES`` before handing bytes to feedparser."""
+        response = requests.get(url, timeout=_REQUEST_TIMEOUT, stream=True)
+        try:
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    declared_bytes = int(content_length)
+                except ValueError as exc:
+                    raise ValueError("Invalid RSS Content-Length") from exc
+                if declared_bytes < 0 or declared_bytes > _MAX_FEED_BYTES:
+                    raise ValueError(
+                        f"RSS response exceeds {_MAX_FEED_BYTES} byte limit"
+                    )
+
+            payload = bytearray()
+            for chunk in response.iter_content(chunk_size=_STREAM_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                if len(payload) + len(chunk) > _MAX_FEED_BYTES:
+                    raise ValueError(
+                        f"RSS response exceeds {_MAX_FEED_BYTES} byte limit"
+                    )
+                payload.extend(chunk)
+            return feedparser.parse(bytes(payload))
+        finally:
+            response.close()
 
     @staticmethod
     def _entry_to_item(
