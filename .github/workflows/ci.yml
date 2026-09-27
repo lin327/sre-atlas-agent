@@ -43,3 +43,14 @@ jobs:
       - name: Run tests
         run: |
           pytest tests/ -v --tb=short --cov=agent --cov-report=term-missing
+
+      - name: Verify Docker image excludes environment credentials
+        run: |
+          test ! -e .env.production
+          fixture_dir="$(mktemp -d .docker-env-check.XXXXXX)"
+          trap 'rm -f .env.production; rm -rf "$fixture_dir"' EXIT
+          printf 'test-only-secret\n' > .env.production
+          printf 'test-only-secret\n' > "$fixture_dir/.env.staging"
+          printf 'example-placeholder\n' > "$fixture_dir/.env.example"
+          docker build --tag sre-atlas-agent:ci .
+          docker run --rm sre-atlas-agent:ci python -c 'from pathlib import Path; root=Path("/app"); assert not list(root.rglob(".env.production")); assert not list(root.rglob(".env.staging")); assert (root / ".env.example").is_file(); assert any(p.name == ".env.example" and p.parent.name.startswith(".docker-env-check.") for p in root.rglob(".env.example"))'

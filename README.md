@@ -105,6 +105,10 @@ PUBLISH_CANONICAL=false python -m agent.main --once --output output/
 
 CLI 从进程环境读取配置，不会自动加载 `.env`。
 
+### Docker 凭据
+
+Docker 构建上下文会排除所有目录下的 `.env*` 文件，仅放行 `.env.example`。不要把真实密钥放入仓库目录后依赖 `COPY . .`；CI 使用 GitHub Actions secrets，容器运行时通过环境变量或只读挂载传入凭据。`.env.example` 只用于说明变量名，不得填写真实值。
+
 > [!CAUTION]
 > 🔴 **`--dry-run` 仍会调 API**：仍调用 Claude API、写出 MDX 并产生费用，只跳过 SQLite 去重与写入。即使已恢复 DB，第二次 `--once --dry-run` 也不会跳过已处理 URL，不能当作免费预览。需要去重时使用不带 `--dry-run` 的 `--once`。
 
