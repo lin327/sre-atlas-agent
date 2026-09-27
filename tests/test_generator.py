@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -10,7 +12,7 @@ import yaml
 
 from agent.collectors.rss_collector import CollectedItem, RSSCollector
 from agent.generator import ContentGenerator, GeneratedPage, _slugify, validate_content
-from agent.main import AtlasPipeline
+from agent.main import AtlasPipeline, main
 
 
 @pytest.fixture
@@ -190,18 +192,52 @@ def test_valid_type_and_confidence_preserved(sample_item):
 
 def test_slug_discards_chinese_punctuation_and_issue_tokens():
     assert _slugify("Docker（网络）/镜像_issue_FLAKY_bugfix_(Guide)") == "docker-guide"
-    assert _slugify("纯中文（知识页面）") == ""
+    assert re.fullmatch(r"topic-[0-9a-f]{8}", _slugify("纯中文（知识页面）"))
 
 
-@pytest.mark.parametrize("title", ["纯中文知识页面", "SLO", "a" * 61])
-def test_invalid_slug_is_rejected(title):
-    valid, issues = validate_content(raw_page(title=title))
+@pytest.mark.parametrize("slug", ["", "x", "a" * 61, "../escape", "issue-guide"])
+def test_invalid_explicit_slug_is_rejected(slug):
+    valid, issues = validate_content(raw_page(), slug=slug)
     assert not valid and any("slug" in issue for issue in issues)
 
 
-@pytest.mark.parametrize("title", ["abcd", "a" * 60, "Docker 网络指南"])
-def test_valid_slug_boundaries(title):
-    assert validate_content(raw_page(title=title)) == (True, [])
+@pytest.mark.parametrize("title", [
+    "abcd", "a" * 60, "Docker 网络指南", "纯中文知识页面", "SLO", "a" * 61,
+])
+def test_title_produces_stable_valid_slug(title, sample_item):
+    slug = _slugify(title, sample_item.url)
+    assert 4 <= len(slug) <= 60
+    assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug)
+    assert _slugify(title, sample_item.url) == _slugify(slug) == slug
+    assert validate_content(raw_page(title=title), source_url=sample_item.url) == (True, [])
+    assert validate_content(raw_page(title=title), slug=slug) == (True, [])
+
+
+def test_chinese_slug_distinguishes_sources_and_titles():
+    first = _slugify("纯中文知识页面", "https://example.com/one")
+    assert first != _slugify("纯中文知识页面", "https://example.com/two")
+    assert first != _slugify("另一篇中文知识页面", "https://example.com/one")
+
+
+def test_chinese_title_is_generated_and_written(
+    tmp_path, monkeypatch, sample_item, mock_claude_client,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    item = replace(sample_item, title="纯中文知识页面")
+    mock_collection(monkeypatch, [item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page(title=item.title)
+    dedup = MagicMock()
+    dedup.is_seen.return_value = False
+
+    AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
+
+    files = list(tmp_path.rglob("*.mdx"))
+    assert len(files) == 1
+    assert re.fullmatch(r"topic-[0-9a-f]{8}", files[0].stem)
+    assert item.title in files[0].read_text()
+    dedup.mark_seen.assert_called_once_with(
+        url=item.url, source=item.source, category="runbooks", title=item.title,
+    )
 
 
 @pytest.mark.parametrize("title", [
@@ -216,7 +252,7 @@ def test_issue_titles_skipped_before_api(sample_item, mock_claude_client, title)
 
 
 @pytest.mark.parametrize("raw", [
-    raw_page(title="fix: toaster regression"), raw_page(title="中文标题"),
+    raw_page(title="fix: toaster regression"), raw_page(title=""),
     raw_page(title=[]), "---\n- not a mapping\n---\n" + "content " * 40,
     raw_page(body="正文没有知识链接。" * 40),
     "---\ntitle: [broken YAML\n---\n" + "content " * 40,
@@ -279,8 +315,8 @@ def test_pipeline_rejects_invalid_outputs_without_marking_seen(
     dedup.mark_seen.assert_not_called()
 
 
-def test_slug_collision_preserves_first_draft_and_unwritten_source(
-    tmp_path, monkeypatch, sample_item, mock_claude_client,
+def test_slug_collision_keeps_both_drafts_and_marks_both_sources(
+    tmp_path, monkeypatch, sample_item, mock_claude_client, dedup,
 ):
     monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
     second_item = replace(sample_item, url="https://example.com/second")
@@ -289,19 +325,105 @@ def test_slug_collision_preserves_first_draft_and_unwritten_source(
         ("Docker 网络排障", sample_item), ("Docker 存储排障", second_item),
     ]]
     monkeypatch.setattr(ContentGenerator, "generate_batch", lambda self, items: pages)
-    dedup = MagicMock()
-    dedup.is_seen.return_value = False
     pipeline = AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup)
     pipeline.run()
     output = tmp_path / "inbox/runbooks/docker.mdx"
     assert output.read_text() == pages[0].content
-    dedup.mark_seen.assert_called_once_with(
-        url=sample_item.url, source=sample_item.source, category="runbooks", title=pages[0].title,
-    )
-    dedup.mark_seen.reset_mock()
+    assert output.with_name("docker-2.mdx").read_text() == pages[1].content
+    assert dedup.is_seen(sample_item.url)
+    assert dedup.is_seen(second_item.url)
     pipeline.run()
     assert output.read_text() == pages[0].content
-    dedup.mark_seen.assert_not_called()
+    assert len(list(tmp_path.rglob("*.mdx"))) == 2
+
+
+@pytest.mark.parametrize("title", ["Docker 网络排障", "a" * 60])
+def test_slug_collision_with_existing_files_preserves_length_limit(
+    tmp_path, monkeypatch, sample_item, mock_claude_client, title,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    mock_collection(monkeypatch, [sample_item])
+    page = ContentGenerator._parse_output(raw_page(title=title), sample_item)
+    monkeypatch.setattr(ContentGenerator, "generate_batch", lambda self, items: [page])
+    folder = tmp_path / "inbox/runbooks"
+    folder.mkdir(parents=True)
+    original = folder / f"{page.slug}.mdx"
+    second = folder / f"{page.slug[:58].rstrip('-')}-2.mdx"
+    original.write_text("First draft")
+    second.write_text("Second draft")
+    dedup = MagicMock()
+    dedup.is_seen.return_value = False
+
+    AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
+
+    assert original.read_text() == "First draft"
+    assert second.read_text() == "Second draft"
+    third = folder / f"{page.slug[:58].rstrip('-')}-3.mdx"
+    assert third.read_text() == page.content
+    assert validate_content(third.read_text(), slug=third.stem) == (True, [])
+    dedup.mark_seen.assert_called_once()
+
+
+def test_dry_run_collects_and_classifies_without_api_or_writes(
+    tmp_path, monkeypatch, sample_item, mock_claude_client, caplog,
+):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = tmp_path / "sources.yaml"
+    config.write_text("rss: [{}]\n")
+    output = tmp_path / "output"
+    items = [
+        replace(sample_item, title="中文架构指南", category="architecture"),
+        replace(sample_item, title="Docker 网络排障", category="", url="https://example.com/docker"),
+    ]
+    collect = MagicMock(return_value=items)
+    monkeypatch.setattr(RSSCollector, "collect", collect)
+    create_db = MagicMock()
+    monkeypatch.setattr("agent.main.Dedup", create_db)
+    create_client = MagicMock(return_value=mock_claude_client)
+    monkeypatch.setattr("anthropic.Anthropic", create_client)
+
+    with caplog.at_level(logging.INFO):
+        for _ in range(2):
+            assert main(["--once", "--dry-run", "--config", str(config), "--output", str(output)]) == 0
+
+    assert collect.call_count == 2
+    assert "[architectures] 中文架构指南" in caplog.text
+    assert "[docker] Docker 网络排障" in caplog.text
+    assert items[0].url in caplog.text
+    create_client.assert_not_called()
+    mock_claude_client.messages.create.assert_not_called()
+    create_db.assert_not_called()
+    assert not output.exists()
+
+
+def test_generate_anyway_explicitly_pays_and_writes_drafts_without_db(
+    tmp_path, monkeypatch, sample_item, mock_claude_client, caplog,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    mock_collection(monkeypatch, [sample_item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    create_db = MagicMock()
+    monkeypatch.setattr("agent.main.Dedup", create_db)
+    config = tmp_path / "sources.yaml"
+    config.write_text("rss: [{}]\n")
+    output = tmp_path / "output"
+
+    assert main([
+        "--once", "--dry-run", "--generate-anyway", "--config", str(config), "--output", str(output),
+    ]) == 0
+
+    mock_claude_client.messages.create.assert_called_once()
+    assert (output / "inbox/runbooks/test-page.mdx").is_file()
+    assert "付费 Claude API" in caplog.text
+    create_db.assert_not_called()
+
+
+def test_generate_anyway_requires_dry_run():
+    with pytest.raises(SystemExit) as error:
+        main(["--generate-anyway"])
+    assert error.value.code == 2
+    with pytest.raises(ValueError, match="requires --dry-run"):
+        AtlasPipeline(config={}, generate_anyway=True)
 
 
 @pytest.mark.parametrize("suffix", ["src/pages", "src/pages/linux", "src/pages/inbox"])

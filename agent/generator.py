@@ -8,6 +8,7 @@ with English technical terms preserved, suitable for an Astro wiki.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -140,6 +141,9 @@ class ContentGenerator:
         Returns ``None`` when generation fails or the quality gate rejects
         the output.
         """
+        if not item.title.strip():
+            logger.warning("Skipping source with an empty title")
+            return None
         if _ISSUE_TITLE.search(item.title.strip()):
             logger.warning("Skipping Issue-like source title: %r", item.title)
             return None
@@ -147,7 +151,7 @@ class ContentGenerator:
         if raw is None:
             return None
 
-        is_valid, issues = validate_content(raw)
+        is_valid, issues = validate_content(raw, source_url=item.url)
         if not is_valid:
             logger.warning(
                 "Quality gate failed for %r: %s",
@@ -296,7 +300,7 @@ class ContentGenerator:
         if confidence not in {"high", "medium", "low"}:
             confidence = "low"
         category = _item_category(item)
-        slug = _slugify(title)
+        slug = _slugify(title, item.url)
         page_type = metadata.get("type")
         if page_type not in ("concept", "fundamental", "runbook", "architecture", "incident", "comparison"):
             page_type = {
@@ -342,7 +346,9 @@ _PLACEHOLDER_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def validate_content(raw: str, *, slug: str | None = None) -> tuple[bool, list[str]]:
+def validate_content(
+    raw: str, *, slug: str | None = None, source_url: str = "",
+) -> tuple[bool, list[str]]:
     """Validate generated content against quality criteria.
 
     Returns ``(is_valid, list_of_issues)`` where *list_of_issues* is empty
@@ -360,7 +366,7 @@ def validate_content(raw: str, *, slug: str | None = None) -> tuple[bool, list[s
     else:
         if _ISSUE_TITLE.search(title.strip()):
             issues.append("Title resembles a GitHub Issue")
-        candidate = _slugify(title) if slug is None else slug
+        candidate = _slugify(title, source_url) if slug is None else slug
         if not _VALID_SLUG.fullmatch(candidate) or _slugify(candidate) != candidate:
             issues.append("Invalid slug: expected [a-z0-9-]{4,60}")
     body = body.strip()
@@ -414,10 +420,21 @@ def _item_category(item: CollectedItem) -> str:
     return classify_item(item.title, item.tags)
 
 
-def _slugify(text: str) -> str:
-    """Convert a title into a URL/wiki-friendly slug."""
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9-]+", "-", text)
-    text = re.sub(r"\b(?:issues?|flaky|bugfix)\b", "", text)
-    text = re.sub(r"-{2,}", "-", text)
-    return text.strip("-")
+def _slugify(text: str, source_url: str = "") -> str:
+    """Keep English terms and use a stable suffix when a title needs one."""
+    normalized = text.lower().strip()
+    if not normalized:
+        return ""
+    excluded = r"\b(?:issues?|flaky|bugfix)\b"
+    if _VALID_SLUG.fullmatch(normalized) and not re.search(excluded, normalized):
+        return normalized
+
+    slug = re.sub(r"[^a-z0-9-]+", "-", normalized)
+    slug = re.sub(excluded, "", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    if _VALID_SLUG.fullmatch(slug):
+        return slug
+
+    digest = hashlib.sha256(f"{normalized}\0{source_url}".encode()).hexdigest()[:8]
+    prefix = re.sub(excluded, "", slug[:51]).rstrip("-") or "topic"
+    return f"{prefix}-{digest}"

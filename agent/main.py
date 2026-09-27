@@ -13,8 +13,11 @@ Usage
     # Continuous mode (default 6-hour interval)
     python -m agent.main
 
-    # Preview without touching the database
+    # Preview collected items without Claude API calls or writes
     python -m agent.main --once --dry-run
+
+    # Paid preview: generate MDX without database writes
+    python -m agent.main --once --dry-run --generate-anyway
 
     # Custom config / output / interval
     python -m agent.main --config config/sources.yaml --output output/ --interval 4
@@ -26,6 +29,7 @@ import argparse
 import logging
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -80,9 +84,11 @@ class AtlasPipeline:
     output_dir : str
         Output root; drafts go under ``inbox/`` unless PUBLISH_CANONICAL=true.
     dry_run : bool
-        When *True*, skip all database writes.
+        Preview collected items without Claude calls, MDX or database writes.
     dedup : Dedup | None
         Dedup instance.  Ignored when *dry_run* is *True*.
+    generate_anyway : bool
+        Opt into paid MDX generation during dry-run; database remains untouched.
     """
 
     def __init__(
@@ -92,7 +98,10 @@ class AtlasPipeline:
         output_dir: str = "output",
         dry_run: bool = False,
         dedup: Dedup | None = None,
+        generate_anyway: bool = False,
     ) -> None:
+        if generate_anyway and not dry_run:
+            raise ValueError("--generate-anyway requires --dry-run")
         self._config = config
         self._config_path = Path(config_path)
         self._output_dir = Path(output_dir)
@@ -103,6 +112,7 @@ class AtlasPipeline:
             self._output_dir /= "inbox"
         self._dry_run = dry_run
         self._dedup = dedup
+        self._generate_anyway = generate_anyway
 
     # ------------------------------------------------------------------
     # Public
@@ -112,7 +122,13 @@ class AtlasPipeline:
         """Execute the full pipeline."""
         from agent.collectors.github_collector import GitHubCollector
         from agent.collectors.rss_collector import CollectedItem, RSSCollector
-        from agent.generator import ContentGenerator, GeneratedPage, validate_content
+        from agent.generator import (
+            ContentGenerator,
+            GeneratedPage,
+            _item_category,
+            _slugify,
+            validate_content,
+        )
 
         # 1. Collect -------------------------------------------------------
         logger.info("Step 1/5 -- Collecting items...")
@@ -150,6 +166,14 @@ class AtlasPipeline:
             logger.info("No new items -- cycle complete.")
             return
 
+        if self._dry_run:
+            for item in new_items:
+                logger.info("[dry-run] [%s] %s (%s)", _item_category(item), item.title, item.url)
+            if not self._generate_anyway:
+                logger.info("[dry-run] 仅预览采集与分类；不调用 Claude，不写 MDX 或数据库。")
+                return
+            logger.warning("[dry-run --generate-anyway] 将调用付费 Claude API 并写 MDX，不写数据库。")
+
         # 3. Generate ------------------------------------------------------
         logger.info("Step 3/5 -- Generating wiki pages via Claude API...")
         generator = ContentGenerator()
@@ -168,14 +192,20 @@ class AtlasPipeline:
                 continue
             category_dir = self._output_dir / page.category
             category_dir.mkdir(parents=True, exist_ok=True)
-            out_file = category_dir / f"{page.slug}.mdx"
-            try:
-                with out_file.open("x", encoding="utf-8") as fh:
-                    fh.write(page.content)
-            except FileExistsError:
-                logger.warning("Skipping existing output: %s", out_file)
-                continue
-            written_pages.append(page)
+            slug, number = page.slug, 1
+            while True:
+                out_file = category_dir / f"{slug}.mdx"
+                try:
+                    with out_file.open("x", encoding="utf-8") as fh:
+                        fh.write(page.content)
+                    break
+                except FileExistsError:
+                    number += 1
+                    suffix = f"-{number}"
+                    slug = _slugify(page.slug[:60 - len(suffix)].rstrip("-") + suffix)
+            if slug != page.slug:
+                logger.info("Resolved slug collision: %s -> %s", page.slug, slug)
+            written_pages.append(replace(page, slug=slug))
             logger.debug("Wrote: %s", out_file)
 
         # 5. Mark seen -----------------------------------------------------
@@ -219,7 +249,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Collect and generate but do not write to the database.",
+        help="预览采集条目与分类；不调用 Claude，不写 MDX 或数据库。",
+    )
+    parser.add_argument(
+        "--generate-anyway",
+        action="store_true",
+        help="配合 --dry-run 调用付费 Claude API 并写 MDX，仍不写数据库。",
     )
     parser.add_argument(
         "--config",
@@ -250,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point.  Returns an exit code (0 = success)."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.generate_anyway and not args.dry_run:
+        parser.error("--generate-anyway requires --dry-run")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -286,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output,
             dry_run=args.dry_run,
             dedup=dedup,
+            generate_anyway=args.generate_anyway,
         )
     except ValueError as exc:
         logger.error("Invalid output configuration: %s", exc)
