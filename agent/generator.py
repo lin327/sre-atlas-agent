@@ -24,6 +24,7 @@ from agent.category_map import (
     validate_category,
 )
 from agent.collectors.rss_collector import CollectedItem
+from agent.content_schema import normalize_frontmatter, validate_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,8 @@ description: <一句话描述，不超过 100 字>
 category: <分类>
 canonical: false
 type: concept | fundamental | runbook | architecture | incident | comparison
-order: 0
-lastUpdated: <YYYY-MM-DD>
+created: <YYYY-MM-DD>
+updated: <YYYY-MM-DD>
 confidence: high | medium | low
 sources:
   - url: <来源URL>
@@ -77,8 +78,7 @@ tags: [tag1, tag2, ...]
 - `category`: 使用提供的分类，不要自行创造新分类
 - `canonical`: 固定为 false，生成内容需人工审核
 - `type`: 内容类型；目录使用 runbooks / architectures，类型使用 runbook / architecture
-- `order`: 排序权重，默认 0
-- `lastUpdated`: 生成日期，格式 YYYY-MM-DD
+- `created` / `updated`: 创建和更新日期，格式 YYYY-MM-DD
 
 ### 正文规范
 
@@ -160,7 +160,11 @@ class ContentGenerator:
             )
             return None
 
-        return self._parse_output(raw, item)
+        try:
+            return self._parse_output(raw, item)
+        except ValueError as exc:
+            logger.warning("Frontmatter contract rejected %r: %s", item.title, exc)
+            return None
 
     def generate_batch(self, items: list[CollectedItem]) -> list[GeneratedPage]:
         """Process a list of items sequentially with rate limiting.
@@ -295,20 +299,12 @@ class ContentGenerator:
     def _parse_output(raw: str, item: CollectedItem) -> GeneratedPage:
         """Extract structured fields from the generated markdown."""
         metadata, body = _split_frontmatter(raw)
-        title = metadata.get("title") or item.title
-        confidence = str(metadata.get("confidence", "medium")).lower()
-        if confidence not in {"high", "medium", "low"}:
-            confidence = "low"
         category = _item_category(item)
+        metadata = normalize_frontmatter(metadata, item=item, category=category)
+        title = metadata["title"]
+        confidence = metadata["confidence"]
         slug = _slugify(title, item.url)
-        page_type = metadata.get("type")
-        if page_type not in ("concept", "fundamental", "runbook", "architecture", "incident", "comparison"):
-            page_type = {
-                "runbooks": "runbook", "architectures": "architecture",
-                "incidents": "incident", "comparisons": "comparison",
-            }.get(category, "concept")
-        metadata.update(title=title, category=category, canonical=False,
-                        type=page_type, confidence=confidence)
+        validate_frontmatter(metadata, slug)
         content = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False) + "---\n" + body
 
         return GeneratedPage(
@@ -367,8 +363,12 @@ def validate_content(
         if _ISSUE_TITLE.search(title.strip()):
             issues.append("Title resembles a GitHub Issue")
         candidate = _slugify(title, source_url) if slug is None else slug
-        if not _VALID_SLUG.fullmatch(candidate) or _slugify(candidate) != candidate:
-            issues.append("Invalid slug: expected [a-z0-9-]{4,60}")
+        candidates = [candidate, metadata["slug"]] if "slug" in metadata else [candidate]
+        for candidate in candidates:
+            if (not isinstance(candidate, str) or not _VALID_SLUG.fullmatch(candidate)
+                    or _slugify(candidate) != candidate):
+                issues.append("Invalid slug: expected [a-z0-9-]{4,60}")
+                break
     body = body.strip()
 
     # 5. Body must exist and meet minimum length.

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SRE Atlas frontmatter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "created",
+    "updated",
+    "sources",
+    "canonical",
+    "category",
+    "type",
+    "confidence",
+    "tags"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "created": {
+      "type": "string",
+      "format": "date"
+    },
+    "updated": {
+      "type": "string",
+      "format": "date"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "title"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "canonical": {
+      "type": "boolean"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "linux",
+        "docker",
+        "kubernetes",
+        "runbooks",
+        "architectures",
+        "incidents",
+        "comparisons"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "concept",
+        "fundamental",
+        "runbook",
+        "architecture",
+        "incident",
+        "comparison"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,58}[a-z0-9]$"
+    }
+  }
+}

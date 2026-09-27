@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import replace
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from agent.collectors.rss_collector import CollectedItem, RSSCollector
+from agent.content_schema import SCHEMA, validate_frontmatter
 from agent.generator import ContentGenerator, GeneratedPage, _slugify, validate_content
 from agent.main import AtlasPipeline, main
 
@@ -97,7 +99,7 @@ class TestParseOutput:
         assert page.source_url == sample_item.url
         assert page.slug  # non-empty
 
-    def test_parse_output_fallback_title(self, sample_item):
+    def test_parse_output_missing_title_fails(self, sample_item):
         raw = (
             "---\n"
             "description: No title field\n"
@@ -105,8 +107,8 @@ class TestParseOutput:
             "## Overview\n\n"
             "Body content. " * 10
         )
-        page = ContentGenerator._parse_output(raw, sample_item)
-        assert page.title == sample_item.title
+        with pytest.raises(ValueError, match="title"):
+            ContentGenerator._parse_output(raw, sample_item)
 
     def test_parse_output_default_confidence(self, sample_item):
         raw = (
@@ -188,6 +190,106 @@ def test_valid_type_and_confidence_preserved(sample_item):
     page = ContentGenerator._parse_output(raw_page(type="fundamental", confidence="high"), sample_item)
     assert frontmatter(page)["type"] == "fundamental"
     assert page.confidence == "high"
+
+
+def test_model_metadata_normalized_to_shared_schema(sample_item):
+    raw = raw_page(
+        title="  Docker 网络指南  ", canonical=True, category="untrusted",
+        created=date(2026, 1, 1), lastUpdated=date(2026, 1, 2),
+        sources=[
+            {"url": sample_item.url, "title": "Model changed the source"},
+            "https://example.com/secondary",
+            {"url": "https://example.com/third", "title": " 第三来源 ", "unknown": True},
+            {"url": "https://example.com/secondary", "title": "Duplicate"},
+            {"url": "javascript:alert(1)", "title": "Invalid"},
+            "ftp://example.com/file", "https://invalid host/path", "https://example.com:bad", {}, None,
+        ],
+        tags=[" docker ", None, 7, "", " ", "docker", "排障"],
+        order=99, unknown="ignored", slug="model-suggested-slug",
+    )
+    page = ContentGenerator._parse_output(raw, sample_item)
+    metadata = frontmatter(page)
+    validate_frontmatter(metadata, page.slug)
+
+    assert metadata["title"] == "Docker 网络指南"
+    assert metadata["category"] == "runbooks"
+    assert metadata["canonical"] is False
+    assert metadata["created"] == "2026-01-01"
+    assert metadata["updated"] == "2026-01-02"
+    assert metadata["sources"] == [
+        {"url": sample_item.url, "title": sample_item.title},
+        {"url": "https://example.com/secondary", "title": "https://example.com/secondary"},
+        {"url": "https://example.com/third", "title": "第三来源"},
+    ]
+    assert metadata["tags"] == ["docker", "排障"]
+    assert set(metadata) == set(SCHEMA["required"])
+    assert page.slug == "docker"
+    assert page.content.split("---\n", 2)[2] == raw.split("---\n", 2)[2]
+
+
+@pytest.mark.parametrize("updated", [None, "2026-02-30", "20260102", 123, []])
+def test_invalid_dates_and_collections_use_safe_defaults(sample_item, updated):
+    before = datetime.now(UTC).date().isoformat()
+    page = ContentGenerator._parse_output(
+        raw_page(created="not a date", updated=updated, tags="wrong", sources="wrong"),
+        sample_item,
+    )
+    after = datetime.now(UTC).date().isoformat()
+    metadata = frontmatter(page)
+    validate_frontmatter(metadata, page.slug)
+    assert metadata["created"] == metadata["updated"]
+    assert metadata["updated"] in {before, after}
+    assert metadata["tags"] == sample_item.tags
+    assert metadata["sources"] == [{"url": sample_item.url, "title": sample_item.title}]
+
+
+def test_updated_takes_precedence_and_created_defaults_to_updated(sample_item):
+    page = ContentGenerator._parse_output(
+        raw_page(updated="2026-01-03", lastUpdated="2026-01-02"), sample_item,
+    )
+    assert frontmatter(page)["created"] == frontmatter(page)["updated"] == "2026-01-03"
+
+
+@pytest.mark.parametrize("changes", [
+    {"title": ""}, {"created": "2026-02-30"}, {"canonical": "false"},
+    {"category": "runbook"}, {"tags": ["valid", 1]}, {"extra": True},
+    {"sources": [{"url": "ftp://example.com/file", "title": "Invalid"}]},
+    {"sources": [{"url": "https://example.com:bad", "title": "Invalid"}]},
+    {"sources": [{"url": "https:example.com", "title": "Invalid"}]},
+    {"sources": [{"url": "https://example.com", "title": ""}]},
+    {"sources": [{"url": "https://example.com"}]},
+    {"sources": [{"url": "https://example.com", "title": "Valid", "extra": True}]},
+])
+def test_shared_schema_rejects_invalid_metadata(sample_item, changes):
+    page = ContentGenerator._parse_output(raw_page(), sample_item)
+    with pytest.raises(ValueError):
+        validate_frontmatter({**frontmatter(page), **changes}, page.slug)
+
+
+def test_shared_schema_rejects_missing_title_and_illegal_slug(sample_item):
+    page = ContentGenerator._parse_output(raw_page(), sample_item)
+    metadata = frontmatter(page)
+    del metadata["title"]
+    with pytest.raises(ValueError, match="required"):
+        validate_frontmatter(metadata, page.slug)
+    with pytest.raises(ValueError, match="slug"):
+        validate_frontmatter(frontmatter(page), "../escape")
+
+
+def test_invalid_source_url_is_skipped_after_normalization(sample_item, mock_claude_client):
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    assert ContentGenerator(api_key="test-key").generate_page(
+        replace(sample_item, url="javascript:alert(1)"),
+    ) is None
+
+
+@pytest.mark.parametrize("slug", [None, [], "", "X/invalid", "../escape", "issue-guide"])
+def test_invalid_model_slug_is_rejected(sample_item, mock_claude_client, slug):
+    raw = raw_page(slug=slug)
+    valid, issues = validate_content(raw)
+    assert not valid and any("slug" in issue for issue in issues)
+    mock_claude_client.messages.create.return_value.content[0].text = raw
+    assert ContentGenerator(api_key="test-key").generate_page(sample_item) is None
 
 
 def test_slug_discards_chinese_punctuation_and_issue_tokens():
