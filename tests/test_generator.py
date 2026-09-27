@@ -379,6 +379,21 @@ def mock_collection(monkeypatch, items):
     monkeypatch.setattr(RSSCollector, "collect", lambda self: items)
 
 
+def test_pipeline_logs_summary_when_no_items(monkeypatch, caplog, tmp_path):
+    caplog.set_level(logging.INFO)
+    mock_collection(monkeypatch, [])
+
+    result = AtlasPipeline(
+        config={"rss": [{}]}, output_dir=str(tmp_path), dry_run=True,
+    ).run()
+
+    assert result.status == "no_updates"
+    assert (
+        "pipeline_summary collected=0 selected=0 generated=0 reused=0 written=0 "
+        "skipped=0 failed=0 budget_hit=0 status=no_updates"
+    ) in caplog.text
+
+
 def test_generation_selection_normalizes_and_deduplicates_before_limits(sample_item, caplog):
     caplog.set_level(logging.INFO)
     items = [
@@ -390,13 +405,14 @@ def test_generation_selection_normalizes_and_deduplicates_before_limits(sample_i
         replace(sample_item, source="rss-b", url="https://example.com/five"),
     ]
 
-    selected = select_items_for_generation(
+    selection = select_items_for_generation(
         items, max_items_per_source=2, max_pages_per_run=3,
     )
 
-    assert [item.url for item in selected] == [
+    assert [item.url for item in selection.items] == [
         "https://example.com/one", "https://example.com/two", "https://example.com/four",
     ]
+    assert selection.budget_hit == 2
     assert "Skipping duplicate normalized URL" in caplog.text
     assert "MAX_ITEMS_PER_SOURCE=2" in caplog.text
     assert "MAX_PAGES_PER_RUN=3" in caplog.text
@@ -405,18 +421,28 @@ def test_generation_selection_normalizes_and_deduplicates_before_limits(sample_i
 def test_generation_selection_skips_oversized_items_before_claude(
     sample_item, caplog, mock_claude_client, tmp_path, monkeypatch,
 ):
+    caplog.set_level(logging.INFO)
     monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
-    oversized = replace(sample_item, content="x" * (MAX_INPUT_CHARS + 1))
+    oversized = replace(
+        sample_item,
+        url="https://example.com/oversized",
+        content="x" * (MAX_INPUT_CHARS + 1),
+    )
     mock_collection(monkeypatch, [oversized, sample_item])
     mock_claude_client.messages.create.return_value.content[0].text = raw_page()
     dedup = MagicMock()
     dedup.is_seen.return_value = False
 
-    AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
+    result = AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
 
     mock_claude_client.messages.create.assert_called_once()
     assert len(list(tmp_path.rglob("*.mdx"))) == 1
+    assert result.budget_hit == 1
     assert "Skipping oversized source item" in caplog.text
+    assert (
+        "pipeline_summary collected=2 selected=1 generated=1 reused=0 written=1 "
+        "skipped=0 failed=0 budget_hit=1"
+    ) in caplog.text
 
 
 def test_generation_selection_uses_normalized_url_for_persistent_dedup(sample_item):
@@ -427,9 +453,10 @@ def test_generation_selection_uses_normalized_url_for_persistent_dedup(sample_it
         replace(sample_item, url="https://example.com/new"),
     ]
 
-    selected = select_items_for_generation(items, dedup=dedup)
+    selection = select_items_for_generation(items, dedup=dedup)
 
-    assert [item.url for item in selected] == ["https://example.com/new"]
+    assert [item.url for item in selection.items] == ["https://example.com/new"]
+    assert selection.budget_hit == 0
     assert [call.args[0] for call in dedup.is_seen.call_args_list] == [
         "https://example.com/old", "https://example.com/new",
     ]

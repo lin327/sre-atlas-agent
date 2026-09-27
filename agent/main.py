@@ -109,6 +109,12 @@ def _item_input_chars(item: Any) -> int:
     return sum(len(value) for value in values if isinstance(value, str))
 
 
+@dataclass
+class ItemSelection:
+    items: list[Any]
+    budget_hit: int = 0
+
+
 def select_items_for_generation(
     items: list[Any],
     *,
@@ -117,11 +123,10 @@ def select_items_for_generation(
     max_items_per_source: int = MAX_ITEMS_PER_SOURCE,
     max_pages_per_run: int = MAX_PAGES_PER_RUN,
     max_input_chars: int = MAX_INPUT_CHARS,
-) -> list[Any]:
+) -> ItemSelection:
     """Normalize and deduplicate collected items before applying spend limits."""
     normalized_by_url: dict[str, Any] = {}
     input_lengths: dict[str, int] = {}
-    oversized = 0
 
     for item in items:
         url = normalize_source_url(item.url)
@@ -130,14 +135,6 @@ def select_items_for_generation(
             continue
         normalized_item = replace(item, url=url)
         input_chars = _item_input_chars(normalized_item)
-        if input_chars > max_input_chars:
-            oversized += 1
-            logger.warning(
-                "Skipping oversized source item %r (%d chars; limit %d).",
-                item.title,
-                input_chars,
-                max_input_chars,
-            )
         if url in normalized_by_url:
             logger.info("Skipping duplicate normalized URL: %s", url)
             if input_lengths[url] > max_input_chars >= input_chars:
@@ -151,8 +148,16 @@ def select_items_for_generation(
     # input or API-call budgets are enforced.
     normalized_items: list[Any] = []
     already_seen = 0
+    oversized = 0
     for url, item in normalized_by_url.items():
         if input_lengths[url] > max_input_chars:
+            oversized += 1
+            logger.warning(
+                "Skipping oversized source item %r (%d chars; limit %d).",
+                item.title,
+                input_lengths[url],
+                max_input_chars,
+            )
             continue
         if dedup and not dry_run and dedup.is_seen(url):
             already_seen += 1
@@ -162,12 +167,14 @@ def select_items_for_generation(
     selected: list[Any] = []
     source_counts: Counter[str] = Counter()
     source_limited = 0
-    for item in normalized_items:
+    run_limited = 0
+    for index, item in enumerate(normalized_items):
         if len(selected) >= max_pages_per_run:
             logger.warning(
                 "[budget_hit] MAX_PAGES_PER_RUN=%d reached; remaining candidates skipped.",
                 max_pages_per_run,
             )
+            run_limited = len(normalized_items) - index
             break
         source = item.source.strip() or "unknown"
         if source_counts[source] >= max_items_per_source:
@@ -182,6 +189,7 @@ def select_items_for_generation(
         source_counts[source] += 1
         selected.append(item)
 
+    budget_hit = oversized + source_limited + run_limited
     logger.info(
         "Selected %d/%d candidate(s) for generation (%d already seen, %d oversized, %d source-capped).",
         len(selected),
@@ -190,7 +198,15 @@ def select_items_for_generation(
         oversized,
         source_limited,
     )
-    return selected
+    if budget_hit:
+        logger.warning(
+            "[budget_hit] skipped=%d oversized=%d source_limited=%d run_limited=%d.",
+            budget_hit,
+            oversized,
+            source_limited,
+            run_limited,
+        )
+    return ItemSelection(items=selected, budget_hit=budget_hit)
 
 
 @dataclass
@@ -202,6 +218,7 @@ class PipelineResult:
     written: int = 0
     skipped: int = 0
     failed: int = 0
+    budget_hit: int = 0
 
     @property
     def status(self) -> str:
@@ -258,6 +275,23 @@ def _record_github_output(result: PipelineResult) -> None:
         output.write(f"written={result.written}\n")
         output.write(f"has_written={str(result.written > 0).lower()}\n")
         output.write(f"failed={result.failed}\n")
+
+
+def _log_pipeline_summary(result: PipelineResult) -> None:
+    """Emit one machine-readable key-value record for each collection run."""
+    logger.info(
+        "pipeline_summary collected=%d selected=%d generated=%d reused=%d "
+        "written=%d skipped=%d failed=%d budget_hit=%d status=%s",
+        result.collected,
+        result.selected,
+        result.generated,
+        result.reused,
+        result.written,
+        result.skipped,
+        result.failed,
+        result.budget_hit,
+        result.status,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -341,18 +375,22 @@ class AtlasPipeline:
         result.collected = len(all_items)
         if not all_items:
             logger.info("Nothing collected -- cycle complete.")
+            _log_pipeline_summary(result)
             return result
 
         # 2. Normalize, deduplicate, and enforce spend limits --------------
         logger.info("Step 2/5 -- Deduplicating and applying generation budgets...")
-        new_items = select_items_for_generation(
+        selection = select_items_for_generation(
             all_items,
             dedup=self._dedup,
             dry_run=self._dry_run,
         )
+        new_items = selection.items
+        result.budget_hit = selection.budget_hit
         result.selected = len(new_items)
         if not new_items:
             logger.info("No new items -- cycle complete.")
+            _log_pipeline_summary(result)
             return result
 
         if self._dry_run:
@@ -360,6 +398,7 @@ class AtlasPipeline:
                 logger.info("[dry-run] [%s] %s (%s)", _item_category(item), item.title, item.url)
             if not self._generate_anyway:
                 logger.info("[dry-run] 仅预览采集与分类；不调用 Claude，不写 MDX 或数据库。")
+                _log_pipeline_summary(result)
                 return result
             logger.warning("[dry-run --generate-anyway] 将调用付费 Claude API 并写 MDX，不写数据库。")
 
@@ -469,16 +508,7 @@ class AtlasPipeline:
 
         if self._dry_run:
             logger.info("[dry-run] Skipping database writes.")
-        logger.info(
-            "Cycle complete: collected=%d selected=%d generated=%d reused=%d written=%d skipped=%d failed=%d.",
-            result.collected,
-            result.selected,
-            result.generated,
-            result.reused,
-            result.written,
-            result.skipped,
-            result.failed,
-        )
+        _log_pipeline_summary(result)
         return result
 
 
@@ -585,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             logger.exception("Collection cycle failed before completion.")
             result = PipelineResult(failed=1)
+            _log_pipeline_summary(result)
         _record_github_output(result)
         return int(result.failed > 0)
 
