@@ -103,3 +103,14 @@ def test_empty_api_result_returns_no_items(tmp_path, mock_get):
 
     assert GitHubCollector(path, token="test-token").collect() == []
     mock_get.assert_called_once()
+
+
+def test_failed_api_source_is_reported_after_retries(tmp_path, mock_get, monkeypatch):
+    monkeypatch.setattr("agent.collectors.github_collector.time.sleep", lambda _: None)
+    mock_get.side_effect = requests.Timeout("offline")
+    path = config_path(tmp_path, [{"repo": "example/recovery", "category": "incidents"}])
+    collector = GitHubCollector(path, token="test-token")
+
+    assert collector.collect() == []
+    assert collector.failed_count == 1
+    assert mock_get.call_count == 3

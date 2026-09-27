@@ -30,8 +30,9 @@ import logging
 import os
 import sys
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -192,6 +193,73 @@ def select_items_for_generation(
     return selected
 
 
+@dataclass
+class PipelineResult:
+    collected: int = 0
+    selected: int = 0
+    generated: int = 0
+    reused: int = 0
+    written: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+    @property
+    def status(self) -> str:
+        if self.failed:
+            return "failed"
+        return "written" if self.written else "no_updates"
+
+
+def _write_page_atomically(output_dir: Path, page: Any) -> tuple[str, Path]:
+    """Publish a complete MDX file without exposing partial writes or overwrites."""
+    category_dir = output_dir / page.category
+    category_dir.mkdir(parents=True, exist_ok=True)
+    number = 1
+
+    while True:
+        suffix = "" if number == 1 else f"-{number}"
+        slug = f"{page.slug[:60 - len(suffix)].rstrip('-')}{suffix}"
+        target = category_dir / f"{slug}.mdx"
+        if target.is_file():
+            if target.read_text(encoding="utf-8") == page.content:
+                return slug, target
+            number += 1
+            continue
+
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=category_dir,
+                prefix=".pending-", suffix=".mdx", delete=False,
+            ) as temporary:
+                temporary.write(page.content)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                temporary_path = Path(temporary.name)
+            try:
+                os.link(temporary_path, target)
+                return slug, target
+            except FileExistsError:
+                if target.is_file() and target.read_text(encoding="utf-8") == page.content:
+                    return slug, target
+                number += 1
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+
+def _record_github_output(result: PipelineResult) -> None:
+    """Expose a stable summary to the collection workflow when running in CI."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    with Path(output_path).open("a", encoding="utf-8") as output:
+        output.write(f"result={result.status}\n")
+        output.write(f"written={result.written}\n")
+        output.write(f"has_written={str(result.written > 0).lower()}\n")
+        output.write(f"failed={result.failed}\n")
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -242,17 +310,18 @@ class AtlasPipeline:
     # Public
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Execute the full pipeline."""
+    def run(self) -> PipelineResult:
+        """Execute one cycle, keeping each generated item recoverable."""
         from agent.collectors.github_collector import GitHubCollector
         from agent.collectors.rss_collector import CollectedItem, RSSCollector
         from agent.generator import (
             ContentGenerator,
             GeneratedPage,
             _item_category,
-            _slugify,
             validate_content,
         )
+
+        result = PipelineResult()
 
         # 1. Collect -------------------------------------------------------
         logger.info("Step 1/5 -- Collecting items...")
@@ -261,15 +330,18 @@ class AtlasPipeline:
         if self._config.get("rss"):
             rss_collector = RSSCollector(config_path=self._config_path)
             all_items.extend(rss_collector.collect())
+            result.failed += rss_collector.failed_count
 
         if self._config.get("github"):
             gh_collector = GitHubCollector(config_path=self._config_path)
             all_items.extend(gh_collector.collect())
+            result.failed += gh_collector.failed_count
 
         logger.info("Collected %d item(s) total.", len(all_items))
+        result.collected = len(all_items)
         if not all_items:
             logger.info("Nothing collected -- cycle complete.")
-            return
+            return result
 
         # 2. Normalize, deduplicate, and enforce spend limits --------------
         logger.info("Step 2/5 -- Deduplicating and applying generation budgets...")
@@ -278,74 +350,136 @@ class AtlasPipeline:
             dedup=self._dedup,
             dry_run=self._dry_run,
         )
+        result.selected = len(new_items)
         if not new_items:
             logger.info("No new items -- cycle complete.")
-            return
+            return result
 
         if self._dry_run:
             for item in new_items:
                 logger.info("[dry-run] [%s] %s (%s)", _item_category(item), item.title, item.url)
             if not self._generate_anyway:
                 logger.info("[dry-run] 仅预览采集与分类；不调用 Claude，不写 MDX 或数据库。")
-                return
+                return result
             logger.warning("[dry-run --generate-anyway] 将调用付费 Claude API 并写 MDX，不写数据库。")
 
-        # 3. Generate ------------------------------------------------------
-        logger.info("Step 3/5 -- Generating wiki pages via Claude API...")
-        generator = ContentGenerator()
-        generated_pages: list[GeneratedPage] = generator.generate_batch(new_items)
-        logger.info("Generated %d page(s).", len(generated_pages))
+        # 3–5. Generate, persist, write, then mark seen per item. ---------
+        logger.info("Processing %d selected item(s) one at a time...", len(new_items))
+        generator: ContentGenerator | None = None
+        for item in new_items:
+            page: GeneratedPage | None = None
+            cached: dict[str, str] | None = None
+            if self._dedup and not self._dry_run:
+                try:
+                    cached_result = self._dedup.get_generated_result(item.url)
+                    if isinstance(cached_result, dict):
+                        cached = cached_result
+                except Exception:
+                    result.failed += 1
+                    logger.exception("Failed to load cached generation for %s", item.url)
+                    continue
 
-        # 4. Write output --------------------------------------------------
-        logger.info("Step 4/5 -- Writing output to %s...", self._output_dir)
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+            if cached is not None:
+                page = GeneratedPage(
+                    slug=cached["slug"],
+                    title=cached["title"],
+                    content=cached["content"],
+                    category=cached["category"],
+                    confidence=cached["confidence"],
+                    source_url=cached["source_url"],
+                )
+                result.reused += 1
+                logger.info("Reusing persisted generation for %s", item.url)
+            else:
+                if ContentGenerator.should_skip_item(item):
+                    result.skipped += 1
+                    continue
+                try:
+                    if generator is None:
+                        generator = ContentGenerator()
+                    page = generator.generate_page(item)
+                except Exception:
+                    result.failed += 1
+                    logger.exception("Failed to generate page for %s", item.url)
+                    continue
+                if page is None:
+                    result.failed += 1
+                    logger.error("Generation or quality validation failed for %s", item.url)
+                    continue
+                result.generated += 1
 
-        written_pages: list[GeneratedPage] = []
-        for page in generated_pages:
             valid, issues = validate_content(page.content, slug=page.slug)
             if not valid or page.category not in ALLOWED_CATEGORIES:
-                logger.warning("Skipping invalid output %r (%s): %s", page.slug, page.category, issues)
+                result.failed += 1
+                logger.error(
+                    "Refusing invalid generated output %r (%s): %s",
+                    page.slug,
+                    page.category,
+                    issues,
+                )
                 continue
-            category_dir = self._output_dir / page.category
-            category_dir.mkdir(parents=True, exist_ok=True)
-            slug, number = page.slug, 1
-            while True:
-                out_file = category_dir / f"{slug}.mdx"
+
+            if self._dedup and not self._dry_run and cached is None:
                 try:
-                    with out_file.open("x", encoding="utf-8") as fh:
-                        fh.write(page.content)
-                    break
-                except FileExistsError:
-                    number += 1
-                    suffix = f"-{number}"
-                    slug = _slugify(page.slug[:60 - len(suffix)].rstrip("-") + suffix)
+                    cached_result = self._dedup.persist_generated_result(
+                        source_url=item.url,
+                        source=item.source or "unknown",
+                        slug=page.slug,
+                        title=page.title,
+                        category=page.category,
+                        confidence=page.confidence,
+                        content=page.content,
+                    )
+                    if isinstance(cached_result, dict):
+                        page = GeneratedPage(
+                            slug=cached_result["slug"],
+                            title=cached_result["title"],
+                            content=cached_result["content"],
+                            category=cached_result["category"],
+                            confidence=cached_result["confidence"],
+                            source_url=cached_result["source_url"],
+                        )
+                except Exception:
+                    result.failed += 1
+                    logger.exception("Failed to persist generation for %s", item.url)
+                    continue
+
+            try:
+                slug, output_file = _write_page_atomically(self._output_dir, page)
+            except Exception:
+                result.failed += 1
+                logger.exception("Failed to write generated page for %s", item.url)
+                continue
             if slug != page.slug:
                 logger.info("Resolved slug collision: %s -> %s", page.slug, slug)
-            written_pages.append(replace(page, slug=slug))
-            logger.debug("Wrote: %s", out_file)
+            result.written += 1
+            logger.debug("Wrote: %s", output_file)
 
-        # 5. Mark seen -----------------------------------------------------
-        logger.info("Step 5/5 -- Marking URLs as seen...")
-        if self._dedup and not self._dry_run:
-            # Build a lookup from url -> item for metadata.
-            item_by_url: dict[str, CollectedItem] = {
-                item.url: item for item in new_items
-            }
-            for page in written_pages:
-                source_item = item_by_url.get(page.source_url)
+            if self._dedup and not self._dry_run:
                 try:
                     self._dedup.mark_seen(
-                        url=page.source_url,
-                        source=source_item.source if source_item else "unknown",
+                        url=item.url,
+                        source=item.source or "unknown",
                         category=page.category,
                         title=page.title,
                     )
                 except Exception:
-                    logger.exception("Failed to mark seen: %s", page.source_url)
-        elif self._dry_run:
-            logger.info("[dry-run] Skipping database writes.")
+                    result.failed += 1
+                    logger.exception("Failed to mark seen after writing %s", item.url)
 
-        logger.info("Cycle complete -- %d new page(s) written.", len(written_pages))
+        if self._dry_run:
+            logger.info("[dry-run] Skipping database writes.")
+        logger.info(
+            "Cycle complete: collected=%d selected=%d generated=%d reused=%d written=%d skipped=%d failed=%d.",
+            result.collected,
+            result.selected,
+            result.generated,
+            result.reused,
+            result.written,
+            result.skipped,
+            result.failed,
+        )
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -446,8 +580,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.once:
-        pipeline.run()
-        return 0
+        try:
+            result = pipeline.run()
+        except Exception:
+            logger.exception("Collection cycle failed before completion.")
+            result = PipelineResult(failed=1)
+        _record_github_output(result)
+        return int(result.failed > 0)
 
     # Continuous mode -------------------------------------------------------
     logger.info("Starting continuous mode (interval=%dh).", args.interval)

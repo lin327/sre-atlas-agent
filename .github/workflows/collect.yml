@@ -96,7 +96,12 @@ jobs:
           path = Path(os.environ["DATABASE_PATH"])
           if os.environ["RESTORE_RUN_ID"]:
               path.parent.mkdir(parents=True, exist_ok=True)
-              shutil.copyfile(Path(os.environ["RUNNER_TEMP"]) / "dedup-restore/data/sre_atlas.db", path)
+              restored = Path(os.environ["RUNNER_TEMP"]) / "dedup-restore/sre_atlas.db"
+              if not restored.is_file():
+                  restored = Path(os.environ["RUNNER_TEMP"]) / "dedup-restore/data/sre_atlas.db"
+              if not restored.is_file():
+                  raise SystemExit("备份 artifact 中找不到 sre_atlas.db。")
+              shutil.copyfile(restored, path)
           if not path.is_file():
               if os.environ["INITIALIZE_DB"] != "true":
                   raise SystemExit("去重库未恢复，停止采集。请用 restore_run_id 恢复；仅首次运行可选 initialize_db。")
@@ -119,6 +124,7 @@ jobs:
           python -m agent.main --once --output output/
 
       - name: Require inbox drafts
+        if: ${{ steps.generate.outputs.has_written == 'true' }}
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -142,15 +148,13 @@ jobs:
                   raise SystemExit("WAL checkpoint 失败，不保存不完整快照。")
           PY
 
-      - name: Back up dedup database and drafts together
+      - name: Back up dedup database
         id: backup
         if: ${{ always() && steps.snapshot.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: dedup-db-${{ github.run_attempt }}
-          path: |
-            data/sre_atlas.db
-            output/inbox/
+          path: data/sre_atlas.db
           retention-days: 30
           if-no-files-found: error
 
@@ -162,7 +166,7 @@ jobs:
           key: dedup-v1-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload generated pages
-        if: ${{ always() && steps.database.outcome == 'success' }}
+        if: ${{ always() && steps.database.outcome == 'success' && steps.generate.outputs.has_written == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: inbox-drafts-${{ github.run_attempt }}

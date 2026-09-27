@@ -135,17 +135,25 @@ class ContentGenerator:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    @staticmethod
+    def should_skip_item(item: CollectedItem) -> bool:
+        """Return whether a source title is intentionally excluded pre-API."""
+        title = item.title.strip()
+        if not title:
+            logger.warning("Skipping source with an empty title")
+            return True
+        if _ISSUE_TITLE.search(title):
+            logger.warning("Skipping Issue-like source title: %r", item.title)
+            return True
+        return False
+
     def generate_page(self, item: CollectedItem) -> GeneratedPage | None:
         """Generate a single wiki page from a CollectedItem.
 
         Returns ``None`` when generation fails or the quality gate rejects
         the output.
         """
-        if not item.title.strip():
-            logger.warning("Skipping source with an empty title")
-            return None
-        if _ISSUE_TITLE.search(item.title.strip()):
-            logger.warning("Skipping Issue-like source title: %r", item.title)
+        if self.should_skip_item(item):
             return None
         raw = self._call_claude(item)
         if raw is None:

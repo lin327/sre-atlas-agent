@@ -13,6 +13,7 @@ import yaml
 
 from agent.collectors.rss_collector import CollectedItem, RSSCollector
 from agent.content_schema import SCHEMA, validate_frontmatter
+from agent.dedup import Dedup
 from agent.generator import ContentGenerator, GeneratedPage, _slugify, validate_content
 from agent.main import AtlasPipeline, main, select_items_for_generation
 from config.settings import MAX_INPUT_CHARS
@@ -466,7 +467,7 @@ def test_pipeline_rejects_invalid_outputs_without_marking_seen(
     monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
     mock_collection(monkeypatch, [sample_item])
     page = replace(ContentGenerator._parse_output(raw_page(), sample_item), **changes)
-    monkeypatch.setattr(ContentGenerator, "generate_batch", lambda self, items: [page])
+    monkeypatch.setattr(ContentGenerator, "generate_page", lambda self, item: page)
     dedup = MagicMock()
     dedup.is_seen.return_value = False
     AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
@@ -483,7 +484,8 @@ def test_slug_collision_keeps_both_drafts_and_marks_both_sources(
     pages = [ContentGenerator._parse_output(raw_page(title=title), item) for title, item in [
         ("Docker 网络排障", sample_item), ("Docker 存储排障", second_item),
     ]]
-    monkeypatch.setattr(ContentGenerator, "generate_batch", lambda self, items: pages)
+    generated_pages = iter(pages)
+    monkeypatch.setattr(ContentGenerator, "generate_page", lambda self, item: next(generated_pages))
     pipeline = AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup)
     pipeline.run()
     output = tmp_path / "inbox/runbooks/docker.mdx"
@@ -503,7 +505,7 @@ def test_slug_collision_with_existing_files_preserves_length_limit(
     monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
     mock_collection(monkeypatch, [sample_item])
     page = ContentGenerator._parse_output(raw_page(title=title), sample_item)
-    monkeypatch.setattr(ContentGenerator, "generate_batch", lambda self, items: [page])
+    monkeypatch.setattr(ContentGenerator, "generate_page", lambda self, item: page)
     folder = tmp_path / "inbox/runbooks"
     folder.mkdir(parents=True)
     original = folder / f"{page.slug}.mdx"
@@ -521,6 +523,132 @@ def test_slug_collision_with_existing_files_preserves_length_limit(
     assert third.read_text() == page.content
     assert validate_content(third.read_text(), slug=third.stem) == (True, [])
     dedup.mark_seen.assert_called_once()
+
+
+def test_mark_seen_failure_is_nonzero_and_reuses_persisted_page_on_retry(
+    tmp_path, monkeypatch, sample_item, mock_claude_client,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    mock_collection(monkeypatch, [sample_item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    dedup = Dedup(db_path=str(tmp_path / "dedup.db"))
+    original_mark_seen = dedup.mark_seen
+    mark_seen_calls = 0
+
+    def fail_once(**kwargs):
+        nonlocal mark_seen_calls
+        mark_seen_calls += 1
+        if mark_seen_calls == 1:
+            raise OSError("temporary database write failure")
+        original_mark_seen(**kwargs)
+
+    monkeypatch.setattr(dedup, "mark_seen", fail_once)
+    pipeline = AtlasPipeline(
+        config={"rss": [{}]}, output_dir=str(tmp_path / "output"), dedup=dedup,
+    )
+
+    first = pipeline.run()
+    assert first.status == "failed" and first.failed == 1 and first.written == 1
+    assert dedup.get_generated_result(sample_item.url) is not None
+    assert len(list((tmp_path / "output").rglob("*.mdx"))) == 1
+
+    second = pipeline.run()
+    assert second.status == "written" and second.reused == 1 and second.written == 1
+    assert mock_claude_client.messages.create.call_count == 1
+    assert dedup.is_seen(sample_item.url)
+    assert dedup.get_generated_result(sample_item.url) is None
+    assert len(list((tmp_path / "output").rglob("*.mdx"))) == 1
+
+
+def test_write_failure_reuses_persisted_result_without_second_api_call(
+    tmp_path, monkeypatch, sample_item, mock_claude_client,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    mock_collection(monkeypatch, [sample_item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    dedup = Dedup(db_path=str(tmp_path / "dedup.db"))
+    pipeline = AtlasPipeline(
+        config={"rss": [{}]}, output_dir=str(tmp_path / "output"), dedup=dedup,
+    )
+    from agent.main import _write_page_atomically
+
+    def fail_write(output_dir, page):
+        raise OSError("temporary disk write failure")
+
+    monkeypatch.setattr("agent.main._write_page_atomically", fail_write)
+    first = pipeline.run()
+    assert first.status == "failed" and first.written == 0
+    assert dedup.get_generated_result(sample_item.url) is not None
+    mock_claude_client.messages.create.assert_called_once()
+
+    monkeypatch.setattr("agent.main._write_page_atomically", _write_page_atomically)
+    second = pipeline.run()
+    assert second.status == "written" and second.reused == 1
+    assert mock_claude_client.messages.create.call_count == 1
+    assert dedup.is_seen(sample_item.url)
+    assert len(list((tmp_path / "output").rglob("*.mdx"))) == 1
+
+
+def test_once_returns_nonzero_and_exports_partial_failure(
+    tmp_path, monkeypatch, sample_item, mock_claude_client,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    config = tmp_path / "sources.yaml"
+    config.write_text("rss: [{}]\n")
+    mock_collection(monkeypatch, [sample_item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    dedup = MagicMock()
+    dedup.is_seen.return_value = False
+    dedup.mark_seen.side_effect = OSError("temporary database write failure")
+    monkeypatch.setattr("agent.main.Dedup", lambda: dedup)
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+
+    code = main([
+        "--once", "--config", str(config), "--output", str(tmp_path / "output"),
+    ])
+
+    assert code == 1
+    assert "result=failed" in github_output.read_text()
+    assert "has_written=true" in github_output.read_text()
+    assert "failed=1" in github_output.read_text()
+
+
+def test_once_reports_no_updates_as_success(tmp_path, monkeypatch):
+    config = tmp_path / "sources.yaml"
+    config.write_text("rss: [{}]\n")
+    mock_collection(monkeypatch, [])
+    monkeypatch.setattr("agent.main.Dedup", MagicMock())
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+
+    assert main([
+        "--once", "--config", str(config), "--output", str(tmp_path / "output"),
+    ]) == 0
+    assert "result=no_updates" in github_output.read_text()
+    assert "has_written=false" in github_output.read_text()
+    assert "failed=0" in github_output.read_text()
+
+
+def test_once_reports_collector_failure_as_nonzero(tmp_path, monkeypatch):
+    config = tmp_path / "sources.yaml"
+    config.write_text("rss: [{}]\n")
+
+    def fail_collect(collector):
+        collector._failed_count = 1
+        return []
+
+    monkeypatch.setattr(RSSCollector, "collect", fail_collect)
+    monkeypatch.setattr("agent.main.Dedup", MagicMock())
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+
+    assert main([
+        "--once", "--config", str(config), "--output", str(tmp_path / "output"),
+    ]) == 1
+    assert "result=failed" in github_output.read_text()
+    assert "has_written=false" in github_output.read_text()
+    assert "failed=1" in github_output.read_text()
 
 
 def test_dry_run_collects_and_classifies_without_api_or_writes(

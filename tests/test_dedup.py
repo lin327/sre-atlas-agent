@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent.dedup import Dedup
+
 
 class TestIsSeen:
     """is_seen() behaviour."""
@@ -46,3 +48,25 @@ class TestGetStats:
         dedup.mark_seen("https://x.com", source="rss", category="", title="X")
         stats = dedup.get_stats()
         assert "uncategorised" in stats["by_category"]
+
+
+def test_generated_result_survives_retry_until_url_is_marked_seen(dedup, tmp_db):
+    values = {
+        "source_url": "https://example.com/retry",
+        "source": "Example feed",
+        "slug": "retry-guide",
+        "title": "Retry guide",
+        "category": "runbooks",
+        "confidence": "medium",
+        "content": "---\ntitle: Retry guide\n---\nBody",
+    }
+    stored = dedup.persist_generated_result(**values)
+
+    assert dedup.get_generated_result(values["source_url"]) == stored
+    assert Dedup(db_path=tmp_db).get_generated_result(values["source_url"]) == stored
+
+    dedup.mark_seen(
+        values["source_url"], source=values["source"],
+        category=values["category"], title=values["title"],
+    )
+    assert dedup.get_generated_result(values["source_url"]) is None

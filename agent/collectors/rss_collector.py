@@ -54,6 +54,12 @@ class RSSCollector:
     def __init__(self, config_path: Path | None = None) -> None:
         self._config_path = config_path or _DEFAULT_CONFIG_PATH
         self._seen_urls: set[str] = set()
+        self._failed_count = 0
+
+    @property
+    def failed_count(self) -> int:
+        """Number of configured feeds that failed after retries."""
+        return self._failed_count
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,6 +85,7 @@ class RSSCollector:
             logger.info("Fetching RSS feed: %s (%s)", name, url)
             feed = self._fetch_feed(url, name)
             if feed is None:
+                self._failed_count += 1
                 continue
 
             for entry in feed.entries:
@@ -106,6 +113,7 @@ class RSSCollector:
         """Load RSS source definitions from the YAML config file."""
         if not self._config_path.exists():
             logger.error("Config file not found: %s", self._config_path)
+            self._failed_count += 1
             return []
 
         try:
@@ -113,11 +121,13 @@ class RSSCollector:
                 config = yaml.safe_load(fh) or {}
         except (yaml.YAMLError, OSError) as exc:
             logger.error("Failed to load config %s: %s", self._config_path, exc)
+            self._failed_count += 1
             return []
 
         sources = config.get("rss", [])
         if not isinstance(sources, list):
             logger.error("rss_sources must be a list in %s", self._config_path)
+            self._failed_count += 1
             return []
 
         return sources

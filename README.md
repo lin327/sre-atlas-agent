@@ -114,15 +114,15 @@ Docker 构建上下文会排除所有目录下的 `.env*` 文件，仅放行 `.e
 
 ## 手动采集与发布边界
 
-`collect.yml` 的 schedule 保持注释，仅允许 `workflow_dispatch`。在 GitHub Actions 的 **Collect & Generate** 工作流中**手动触发会计费**，使用仓库的 `ANTHROPIC_API_KEY` secret；缺少 key 会在采集前失败。工作流注入内置 `GITHUB_TOKEN`；本地未配置 token 时，collector 会记录匿名访问、每小时 60 次限流的降级日志。工作流固定 `PUBLISH_CANONICAL=false`，草稿上传为 `inbox-drafts-<attempt>` artifact。
+`collect.yml` 的 schedule 保持注释，仅允许 `workflow_dispatch`。在 GitHub Actions 的 **Collect & Generate** 工作流中**手动触发会计费**，使用仓库的 `ANTHROPIC_API_KEY` secret；缺少 key 会在采集前失败。工作流注入内置 `GITHUB_TOKEN`；本地未配置 token 时，collector 会记录匿名访问、每小时 60 次限流的降级日志。工作流固定 `PUBLISH_CANONICAL=false`，草稿上传为 `inbox-drafts-<attempt>` artifact。付费调用前先按规范化 URL 跨 collector 去重，再限制为每来源最多 5 条、每次最多 10 篇；单条输入超过 20,000 字符会跳过并记录日志。
 
-**重复触发只在最新 DB 成功恢复后才具备去重保护**，新 URL 仍可能计费。工作流按分支串行运行，使用独立运行/attempt 的 cache key 保存 `data/sre_atlas.db`，下次恢复该分支最新缓存并检查完整性及 URL 记录表。采集结束后先 checkpoint WAL，将 DB 与本次草稿一起备份为 `dedup-db-<attempt>` artifact，备份成功后才保存缓存。即使 inbox 为空导致任务失败，也会备份可用 DB；两个 artifact 均保留 30 天，备份中 `data/sre_atlas.db` 与 `output/inbox/` 保留各自路径。
+**重复触发只在最新 DB 成功恢复后才具备去重保护**，新 URL 仍可能计费。工作流按分支串行运行，使用独立运行/attempt 的 cache key 保存 `data/sre_atlas.db`，下次恢复该分支最新缓存并检查完整性及 URL 记录表。采集结束后先 checkpoint WAL；去重库单独备份为 `dedup-db-<attempt>` artifact，草稿单独上传为 `inbox-drafts-<attempt>`，各保留 30 天。生成后的 MDX 会先写入去重库的暂存结果，再原子写入 inbox 文件，最后标记 URL 已处理；如果写文件或标记失败，下次恢复 DB 后会复用已生成内容，不重复调用 Claude。没有新内容会以成功状态结束；生成、落盘或去重状态写入失败会返回非零。
 
 - 首次运行没有历史库时，才勾选 `initialize_db`；默认不勾选，未恢复 DB 就停止，不会静默使用空库生成。
 - 后续在同一分支运行，先确认日志显示 DB 已就绪。缓存丢失或上次保存失败时，填写最近有效备份的 `restore_run_id` 和 `restore_attempt`（默认 `1`），从 artifact 恢复；不要用初始化选项绕过丢失的历史。无法找回最新 DB 时，停止重复触发。
-- `output/inbox/` 没有非空 MDX 时任务失败，上传也使用 `if-no-files-found: error`。没有新 URL、采集失败或质量门全部跳过都可能造成空产物；先查日志，不要靠反复运行重试。
+- 只有本次确实写出草稿时，`output/inbox/` 才要求非空并上传；无新内容会跳过草稿 artifact、以成功结束。系统失败仍会返回非零并备份可用去重库；没有新 URL、采集失败或质量门全部跳过都可能没有新草稿，先查日志，不要靠反复运行重试。
 
-当前去重只记录成功写出草稿的 URL，不记录 API 调用或失败尝试；生成失败、质量门跳过的内容可能在下次再次调用 API。标题像 GitHub Issue、slug 非法或正文缺少 wikilink 的输出会被质量门跳过。
+`ingested_urls` 只记录已写出草稿并成功 `mark_seen` 的 URL；Claude 调用失败或质量门拒绝的内容不会标记，后续重试可能再次计费。已成功生成但文件写入或 `mark_seen` 失败的页面会留在 `generated_results`，重试时复用缓存内容。标题像 GitHub Issue、slug 非法或正文缺少 wikilink 的输出会被质量门拒绝。
 
 下载草稿后，人工核对来源、适用版本和技术步骤，补齐 Wiki 所需 frontmatter，再通过 PR 纳入 Wiki。未审核稿如需交给 Wiki 仓库管理，应放 `src/inbox/`，不要放进会生成公开路由的 `src/pages/inbox/`；审核通过后才进入 `src/pages/<category>/` 并标记 `canonical: true`。遵循 Wiki 的 [CONTENT_CONTRACT.md](https://github.com/lin327/sre-wiki/blob/main/CONTENT_CONTRACT.md)。
 

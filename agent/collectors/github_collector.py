@@ -48,6 +48,12 @@ class GitHubCollector:
         self._token = token or os.environ.get("GITHUB_TOKEN")
         self._session = self._build_session()
         self._seen_urls: set[str] = set()
+        self._failed_count = 0
+
+    @property
+    def failed_count(self) -> int:
+        """Number of sources or API requests that failed after retries."""
+        return self._failed_count
 
     # ------------------------------------------------------------------
     # Public API
@@ -71,6 +77,7 @@ class GitHubCollector:
             repo = source.get("repo", "")
             if not repo:
                 logger.warning("Skipping source with no 'repo' field")
+                self._failed_count += 1
                 continue
 
             labels = source.get("labels", [])
@@ -117,6 +124,7 @@ class GitHubCollector:
         """Load GitHub source definitions from the YAML config file."""
         if not self._config_path.exists():
             logger.error("Config file not found: %s", self._config_path)
+            self._failed_count += 1
             return []
 
         try:
@@ -124,11 +132,13 @@ class GitHubCollector:
                 config = yaml.safe_load(fh) or {}
         except (yaml.YAMLError, OSError) as exc:
             logger.error("Failed to load config %s: %s", self._config_path, exc)
+            self._failed_count += 1
             return []
 
         sources = config.get("github", [])
         if not isinstance(sources, list):
             logger.error("github must be a list in %s", self._config_path)
+            self._failed_count += 1
             return []
 
         return sources
@@ -225,6 +235,7 @@ class GitHubCollector:
                     backoff *= 2
 
         logger.error("All %d attempts failed for %s — skipping", max_retries, url)
+        self._failed_count += 1
         return None
 
     @staticmethod

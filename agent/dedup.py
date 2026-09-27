@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,18 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     source_url    TEXT,
     generated_at  TEXT DEFAULT (datetime('now')),
     content_hash  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS generated_results (
+    source_url    TEXT PRIMARY KEY,
+    source        TEXT NOT NULL,
+    slug          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    confidence    TEXT NOT NULL CHECK (confidence IN ('high', 'medium', 'low')),
+    content       TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    generated_at  TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS source_health (
@@ -124,8 +137,85 @@ class Dedup:
                 """,
                 (url, source, category, title, datetime.now(UTC).isoformat()),
             )
+            conn.execute("DELETE FROM generated_results WHERE source_url = ?", (url,))
             conn.commit()
             logger.debug("Marked seen: %s", url)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_generated_result(self, source_url: str) -> dict[str, str] | None:
+        """Return a durable generated page that has not yet been marked seen."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT source_url, source, slug, title, category, confidence,
+                       content, content_hash
+                FROM generated_results WHERE source_url = ?
+                """,
+                (source_url,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            actual_hash = sha256(result["content"].encode("utf-8")).hexdigest()
+            if actual_hash != result["content_hash"]:
+                raise DeduplicationError(
+                    f"Generated result checksum mismatch for {source_url}"
+                )
+            return result
+        finally:
+            conn.close()
+
+    def persist_generated_result(
+        self,
+        *,
+        source_url: str,
+        source: str,
+        slug: str,
+        title: str,
+        category: str,
+        confidence: str,
+        content: str,
+    ) -> dict[str, str]:
+        """Persist a successful generation before writing its MDX file.
+
+        On a duplicate key, return the previously stored generation so a
+        concurrent or retried run reuses the first paid result.
+        """
+        content_hash = sha256(content.encode("utf-8")).hexdigest()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO generated_results
+                    (source_url, source, slug, title, category, confidence, content, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (source_url, source, slug, title, category, confidence, content, content_hash),
+            )
+            row = conn.execute(
+                """
+                SELECT source_url, source, slug, title, category, confidence,
+                       content, content_hash
+                FROM generated_results WHERE source_url = ?
+                """,
+                (source_url,),
+            ).fetchone()
+            conn.commit()
+            if row is None:
+                raise DeduplicationError(
+                    f"Failed to persist generated result for {source_url}"
+                )
+            result = dict(row)
+            if sha256(result["content"].encode("utf-8")).hexdigest() != result["content_hash"]:
+                raise DeduplicationError(
+                    f"Generated result checksum mismatch for {source_url}"
+                )
+            return result
         except Exception:
             conn.rollback()
             raise
