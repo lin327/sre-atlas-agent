@@ -14,7 +14,8 @@ import yaml
 from agent.collectors.rss_collector import CollectedItem, RSSCollector
 from agent.content_schema import SCHEMA, validate_frontmatter
 from agent.generator import ContentGenerator, GeneratedPage, _slugify, validate_content
-from agent.main import AtlasPipeline, main
+from agent.main import AtlasPipeline, main, select_items_for_generation
+from config.settings import MAX_INPUT_CHARS
 
 
 @pytest.fixture
@@ -375,6 +376,62 @@ def test_wikilink_must_be_in_body_prose(fake_link):
 
 def mock_collection(monkeypatch, items):
     monkeypatch.setattr(RSSCollector, "collect", lambda self: items)
+
+
+def test_generation_selection_normalizes_and_deduplicates_before_limits(sample_item, caplog):
+    caplog.set_level(logging.INFO)
+    items = [
+        replace(sample_item, source="rss-a", url="HTTPS://Example.com:443/one#section"),
+        replace(sample_item, source="rss-a", url="https://example.com/one"),
+        replace(sample_item, source="rss-a", url="https://example.com/two"),
+        replace(sample_item, source="rss-a", url="https://example.com/three"),
+        replace(sample_item, source="rss-b", url="https://example.com/four"),
+        replace(sample_item, source="rss-b", url="https://example.com/five"),
+    ]
+
+    selected = select_items_for_generation(
+        items, max_items_per_source=2, max_pages_per_run=3,
+    )
+
+    assert [item.url for item in selected] == [
+        "https://example.com/one", "https://example.com/two", "https://example.com/four",
+    ]
+    assert "Skipping duplicate normalized URL" in caplog.text
+    assert "MAX_ITEMS_PER_SOURCE=2" in caplog.text
+    assert "MAX_PAGES_PER_RUN=3" in caplog.text
+
+
+def test_generation_selection_skips_oversized_items_before_claude(
+    sample_item, caplog, mock_claude_client, tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("PUBLISH_CANONICAL", raising=False)
+    oversized = replace(sample_item, content="x" * (MAX_INPUT_CHARS + 1))
+    mock_collection(monkeypatch, [oversized, sample_item])
+    mock_claude_client.messages.create.return_value.content[0].text = raw_page()
+    dedup = MagicMock()
+    dedup.is_seen.return_value = False
+
+    AtlasPipeline(config={"rss": [{}]}, output_dir=str(tmp_path), dedup=dedup).run()
+
+    mock_claude_client.messages.create.assert_called_once()
+    assert len(list(tmp_path.rglob("*.mdx"))) == 1
+    assert "Skipping oversized source item" in caplog.text
+
+
+def test_generation_selection_uses_normalized_url_for_persistent_dedup(sample_item):
+    dedup = MagicMock()
+    dedup.is_seen.side_effect = lambda url: url == "https://example.com/old"
+    items = [
+        replace(sample_item, url="HTTPS://Example.com:443/old#section"),
+        replace(sample_item, url="https://example.com/new"),
+    ]
+
+    selected = select_items_for_generation(items, dedup=dedup)
+
+    assert [item.url for item in selected] == ["https://example.com/new"]
+    assert [call.args[0] for call in dedup.is_seen.call_args_list] == [
+        "https://example.com/old", "https://example.com/new",
+    ]
 
 
 @pytest.mark.parametrize("flag", [None, "false", "1", "TRUE", "true"])

@@ -29,15 +29,18 @@ import argparse
 import logging
 import os
 import sys
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
 from agent.category_map import ALLOWED_CATEGORIES
 from agent.dedup import Dedup, DeduplicationError
 from agent.scheduler import CollectionScheduler
+from config.settings import MAX_INPUT_CHARS, MAX_ITEMS_PER_SOURCE, MAX_PAGES_PER_RUN
 
 # ---------------------------------------------------------------------------
 # Heavy imports -- deferred so ``--help`` works without all deps installed.
@@ -66,6 +69,127 @@ def load_config(path: str) -> dict[str, Any]:
         raise TypeError("Config must be a YAML mapping.")
 
     return data
+
+
+def normalize_source_url(url: str) -> str | None:
+    """Normalize an absolute HTTP(S) URL for cross-collector deduplication."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        scheme = parts.scheme.lower()
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if scheme not in {"http", "https"} or not hostname or parts.username or parts.password:
+        return None
+
+    hostname = hostname.lower()
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None and not (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        authority = f"{authority}:{port}"
+    return urlunsplit((scheme, authority, parts.path or "/", parts.query, ""))
+
+
+def _item_input_chars(item: Any) -> int:
+    """Count text fields passed to the model so source payloads stay bounded."""
+    values = (
+        item.title,
+        item.url,
+        item.source,
+        item.category,
+        item.summary,
+        item.content,
+        *(item.tags or []),
+    )
+    return sum(len(value) for value in values if isinstance(value, str))
+
+
+def select_items_for_generation(
+    items: list[Any],
+    *,
+    dedup: Dedup | None = None,
+    dry_run: bool = False,
+    max_items_per_source: int = MAX_ITEMS_PER_SOURCE,
+    max_pages_per_run: int = MAX_PAGES_PER_RUN,
+    max_input_chars: int = MAX_INPUT_CHARS,
+) -> list[Any]:
+    """Normalize and deduplicate collected items before applying spend limits."""
+    normalized_by_url: dict[str, Any] = {}
+    input_lengths: dict[str, int] = {}
+    oversized = 0
+
+    for item in items:
+        url = normalize_source_url(item.url)
+        if url is None:
+            logger.warning("Skipping item with invalid source URL: %r", item.title)
+            continue
+        normalized_item = replace(item, url=url)
+        input_chars = _item_input_chars(normalized_item)
+        if input_chars > max_input_chars:
+            oversized += 1
+            logger.warning(
+                "Skipping oversized source item %r (%d chars; limit %d).",
+                item.title,
+                input_chars,
+                max_input_chars,
+            )
+        if url in normalized_by_url:
+            logger.info("Skipping duplicate normalized URL: %s", url)
+            if input_lengths[url] > max_input_chars >= input_chars:
+                normalized_by_url[url] = normalized_item
+                input_lengths[url] = input_chars
+            continue
+        normalized_by_url[url] = normalized_item
+        input_lengths[url] = input_chars
+
+    # URL normalization and cross-collector deduplication happen before either
+    # input or API-call budgets are enforced.
+    normalized_items: list[Any] = []
+    already_seen = 0
+    for url, item in normalized_by_url.items():
+        if input_lengths[url] > max_input_chars:
+            continue
+        if dedup and not dry_run and dedup.is_seen(url):
+            already_seen += 1
+            continue
+        normalized_items.append(item)
+
+    selected: list[Any] = []
+    source_counts: Counter[str] = Counter()
+    source_limited = 0
+    for item in normalized_items:
+        if len(selected) >= max_pages_per_run:
+            logger.warning(
+                "[budget_hit] MAX_PAGES_PER_RUN=%d reached; remaining candidates skipped.",
+                max_pages_per_run,
+            )
+            break
+        source = item.source.strip() or "unknown"
+        if source_counts[source] >= max_items_per_source:
+            source_limited += 1
+            logger.info(
+                "[budget_hit] MAX_ITEMS_PER_SOURCE=%d reached for %s; skipping %r.",
+                max_items_per_source,
+                source,
+                item.title,
+            )
+            continue
+        source_counts[source] += 1
+        selected.append(item)
+
+    logger.info(
+        "Selected %d/%d candidate(s) for generation (%d already seen, %d oversized, %d source-capped).",
+        len(selected),
+        len(items),
+        already_seen,
+        oversized,
+        source_limited,
+    )
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -147,21 +271,13 @@ class AtlasPipeline:
             logger.info("Nothing collected -- cycle complete.")
             return
 
-        # 2. Dedup ---------------------------------------------------------
-        logger.info("Step 2/5 -- Deduplicating...")
-        new_items: list[CollectedItem] = []
-        seen_count = 0
-
-        for item in all_items:
-            if not item.url:
-                logger.debug("Skipping item with empty URL: %s", item.title)
-                continue
-            if self._dedup and not self._dry_run and self._dedup.is_seen(item.url):
-                seen_count += 1
-                continue
-            new_items.append(item)
-
-        logger.info("%d new item(s), %d already seen.", len(new_items), seen_count)
+        # 2. Normalize, deduplicate, and enforce spend limits --------------
+        logger.info("Step 2/5 -- Deduplicating and applying generation budgets...")
+        new_items = select_items_for_generation(
+            all_items,
+            dedup=self._dedup,
+            dry_run=self._dry_run,
+        )
         if not new_items:
             logger.info("No new items -- cycle complete.")
             return
