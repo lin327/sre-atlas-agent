@@ -1,6 +1,6 @@
 """Content collectors for the SRE Atlas agent."""
 
-from agent.collectors.rss_collector import CollectedItem, RSSCollector
 from agent.collectors.github_collector import GitHubCollector
+from agent.collectors.rss_collector import CollectedItem, RSSCollector
 
-__all__ = ["CollectedItem", "RSSCollector", "GitHubCollector"]
+__all__ = ["CollectedItem", "GitHubCollector", "RSSCollector"]

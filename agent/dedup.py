@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,7 @@ class Dedup:
         ``data/sre_atlas.db``.
     """
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or os.environ.get(
             "DATABASE_PATH", "data/sre_atlas.db"
         )
@@ -123,7 +122,7 @@ class Dedup:
                 INSERT OR IGNORE INTO ingested_urls (url, source, category, title, ingested_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (url, source, category, title, datetime.now(timezone.utc).isoformat()),
+                (url, source, category, title, datetime.now(UTC).isoformat()),
             )
             conn.commit()
             logger.debug("Marked seen: %s", url)

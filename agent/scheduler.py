@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 import signal
 import time
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 import schedule
 
@@ -61,17 +61,17 @@ class CollectionScheduler:
 
     def run_collection_cycle(self) -> None:
         """Execute one full collection cycle with logging and timing."""
-        start = datetime.now(timezone.utc)
+        start = datetime.now(UTC)
         logger.info("=== Collection cycle started at %s ===", start.isoformat())
 
         try:
             self._collection_fn()
-            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            elapsed = (datetime.now(UTC) - start).total_seconds()
             logger.info(
                 "=== Collection cycle finished in %.1fs ===", elapsed
             )
         except Exception:
-            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            elapsed = (datetime.now(UTC) - start).total_seconds()
             logger.exception(
                 "=== Collection cycle FAILED after %.1fs ===", elapsed
             )
@@ -95,7 +95,7 @@ class CollectionScheduler:
         self._running = True
 
         # Graceful shutdown on SIGINT / SIGTERM.
-        def _stop(signum: int, frame) -> None:  # noqa: ANN001
+        def _stop(signum: int, frame) -> None:
             logger.info("Received signal %s — shutting down.", signum)
             self._running = False
 

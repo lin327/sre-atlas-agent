@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +18,7 @@ class CollectedItem:
     content: str
     source: str = ""
     tags: list[str] = field(default_factory=list)
-    published: Optional[str] = None
+    published: str | None = None
 
 
 # ---------------------------------------------------------------------------

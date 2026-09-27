@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import feedparser
 import yaml
@@ -33,7 +32,7 @@ class CollectedItem:
     url: str
     source: str
     category: str
-    published: Optional[datetime] = None
+    published: datetime | None = None
     summary: str = ""
     content: str = ""
     content_type: str = "rss"  # rss, github, doc
@@ -52,7 +51,7 @@ class RSSCollector:
             name: Example Blog
     """
 
-    def __init__(self, config_path: Optional[Path] = None) -> None:
+    def __init__(self, config_path: Path | None = None) -> None:
         self._config_path = config_path or _DEFAULT_CONFIG_PATH
         self._seen_urls: set[str] = set()
 
@@ -123,7 +122,7 @@ class RSSCollector:
 
         return sources
 
-    def _fetch_feed(self, url: str, name: str) -> Optional[feedparser.FeedParserDict]:
+    def _fetch_feed(self, url: str, name: str) -> feedparser.FeedParserDict | None:
         """Fetch an RSS feed with exponential-backoff retry.
 
         Returns the parsed feed on success, or ``None`` after persistent
@@ -147,7 +146,7 @@ class RSSCollector:
                 )
                 return feed
 
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 logger.warning(
                     "Attempt %d/%d failed for %s: %s",
                     attempt,
@@ -194,7 +193,7 @@ class RSSCollector:
         )
 
 
-def _parse_entry_date(entry: feedparser.FeedParserDict) -> Optional[datetime]:
+def _parse_entry_date(entry: feedparser.FeedParserDict) -> datetime | None:
     """Best-effort extraction of a published datetime from a feed entry."""
     # feedparser normalises date fields into a time.struct_time called
     # 'published_parsed' (or 'updated_parsed' as fallback).
@@ -202,6 +201,6 @@ def _parse_entry_date(entry: feedparser.FeedParserDict) -> Optional[datetime]:
     if struct is None:
         return None
     try:
-        return datetime(*struct[:6], tzinfo=timezone.utc)
+        return datetime(*struct[:6], tzinfo=UTC)
     except (TypeError, ValueError):
         return None
