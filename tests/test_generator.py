@@ -158,7 +158,7 @@ def test_collector_type_is_shared():
     assert generator.CollectedItem is CollectedItem is github_collector.CollectedItem
 
 
-def test_generator_uses_configured_claude_model(monkeypatch):
+def test_generator_uses_configured_claude_model(monkeypatch, mock_claude_client):
     monkeypatch.delenv("CLAUDE_MODEL", raising=False)
     monkeypatch.setattr(settings, "CLAUDE_MODEL", "claude-from-settings")
     assert ContentGenerator(api_key="test-key")._model == "claude-from-settings"
