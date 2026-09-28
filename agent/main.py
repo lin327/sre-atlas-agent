@@ -574,6 +574,16 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    if (not args.dry_run or args.generate_anyway) and not os.getenv(
+        "ANTHROPIC_API_KEY", ""
+    ).strip():
+        print(
+            "错误：缺少 ANTHROPIC_API_KEY。Claude 生成需要 API key；"
+            "请配置后重试（仅预览可使用 --dry-run）。",
+            file=sys.stderr,
+        )
+        return 1
+
     # Load config -----------------------------------------------------------
     try:
         config = load_config(args.config)

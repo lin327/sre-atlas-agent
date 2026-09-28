@@ -25,6 +25,7 @@ from agent.category_map import (
 )
 from agent.collectors.rss_collector import CollectedItem
 from agent.content_schema import normalize_frontmatter, validate_frontmatter
+from config.settings import get_claude_model
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,6 @@ tags: [tag1, tag2, ...]
 class ContentGenerator:
     """Generates structured SRE wiki pages from collected items via Claude API."""
 
-    DEFAULT_MODEL: str = "claude-sonnet-4-6"
     MAX_RETRIES: int = 3
     BASE_BACKOFF: float = 2.0  # seconds
     RATE_LIMIT_DELAY: float = 1.2  # seconds between sequential calls
@@ -130,7 +130,7 @@ class ContentGenerator:
         model: str | None = None,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
-        self._model: str = model or self.DEFAULT_MODEL
+        self._model: str = model or get_claude_model()
 
     # ------------------------------------------------------------------
     # Public API

@@ -10,7 +10,12 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "data/sre_atlas.db")
 
 # Claude API
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+
+def get_claude_model() -> str:
+    """Return the configured model, honoring runtime environment overrides."""
+    return os.getenv("CLAUDE_MODEL", CLAUDE_MODEL)
 
 # Collection
 MAX_ITEMS_PER_SOURCE = 5

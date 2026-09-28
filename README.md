@@ -109,8 +109,8 @@ CLI 从进程环境读取配置，不会自动加载 `.env`。
 
 Docker 构建上下文会排除所有目录下的 `.env*` 文件，仅放行 `.env.example`。不要把真实密钥放入仓库目录后依赖 `COPY . .`；CI 使用 GitHub Actions secrets，容器运行时通过环境变量或只读挂载传入凭据。`.env.example` 只用于说明变量名，不得填写真实值。
 
-> [!CAUTION]
-> 🔴 **`--dry-run` 仍会调 API**：仍调用 Claude API、写出 MDX 并产生费用，只跳过 SQLite 去重与写入。即使已恢复 DB，第二次 `--once --dry-run` 也不会跳过已处理 URL，不能当作免费预览。需要去重时使用不带 `--dry-run` 的 `--once`。
+> [!NOTE]
+> `--dry-run` 默认只采集、分类并打印预览，不调用 Claude、不写 MDX 或数据库，因此不产生 API 费用。只有显式添加 `--generate-anyway` 才会调用 Claude 并写入 MDX 草稿；该模式会计费，但仍跳过 SQLite 去重与写入。
 
 ## 手动采集与发布边界
 
@@ -134,7 +134,8 @@ Docker 构建上下文会排除所有目录下的 `.env*` 文件，仅放行 `.e
 python -m agent.main [OPTIONS]
 
   --once              单次运行后退出
-  --dry-run           仍采集、生成和写 MDX，仅跳过数据库去重与写入
+  --dry-run           采集并预览条目，不调用 Claude、不写 MDX 或数据库
+  --generate-anyway   配合 --dry-run 付费调用 Claude 并生成 MDX 草稿
   --config PATH       数据源配置文件（默认 config/sources.yaml）
   --output DIR        输出根目录（默认 output/，草稿再追加 inbox/）
   --interval HOURS    持续模式间隔（默认 6 小时）

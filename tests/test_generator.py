@@ -16,6 +16,7 @@ from agent.content_schema import SCHEMA, validate_frontmatter
 from agent.dedup import Dedup
 from agent.generator import ContentGenerator, GeneratedPage, _slugify, validate_content
 from agent.main import AtlasPipeline, main, select_items_for_generation
+from config import settings
 from config.settings import MAX_INPUT_CHARS
 
 
@@ -158,6 +159,15 @@ def test_collector_type_is_shared():
     from agent.collectors import github_collector
 
     assert generator.CollectedItem is CollectedItem is github_collector.CollectedItem
+
+
+def test_generator_uses_configured_claude_model(monkeypatch):
+    monkeypatch.delenv("CLAUDE_MODEL", raising=False)
+    monkeypatch.setattr(settings, "CLAUDE_MODEL", "claude-from-settings")
+    assert ContentGenerator(api_key="test-key")._model == "claude-from-settings"
+
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-from-environment")
+    assert ContentGenerator(api_key="test-key")._model == "claude-from-environment"
 
 
 @pytest.mark.parametrize("category, expected", [
@@ -738,6 +748,16 @@ def test_generate_anyway_requires_dry_run():
     assert error.value.code == 2
     with pytest.raises(ValueError, match="requires --dry-run"):
         AtlasPipeline(config={}, generate_anyway=True)
+
+
+def test_main_without_api_key_exits_before_loading_config(monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    load_config = MagicMock(side_effect=AssertionError("config must not be loaded"))
+    monkeypatch.setattr("agent.main.load_config", load_config)
+
+    assert main(["--once"]) == 1
+    load_config.assert_not_called()
+    assert "缺少 ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("suffix", ["src/pages", "src/pages/linux", "src/pages/inbox"])

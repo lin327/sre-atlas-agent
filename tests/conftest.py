@@ -30,6 +30,12 @@ def tmp_db(tmp_path):
     return str(tmp_path / "test.db")
 
 
+@pytest.fixture(autouse=True)
+def test_api_key(monkeypatch):
+    """Keep paid-path tests on a harmless key unless a test removes it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only-key")
+
+
 @pytest.fixture
 def dedup(tmp_db):
     """Return a Dedup instance backed by a temporary database."""
