@@ -61,7 +61,9 @@ def test_configured_categories_reach_collected_items(tmp_path, mock_get):
     assert mock_get.call_args_list[0].kwargs["params"]["labels"] == "incident"
 
 
-def test_missing_token_warns_and_collects_anonymously(tmp_path, mock_get, monkeypatch, caplog):
+def test_missing_token_warns_and_collects_anonymously(
+    tmp_path, mock_get, monkeypatch, caplog
+):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     repo = "example/recovery"
     mock_get.return_value = response([issue(repo)])
@@ -99,7 +101,9 @@ def test_empty_configuration_skips_http(tmp_path, mock_get, contents):
 
 def test_empty_api_result_returns_no_items(tmp_path, mock_get):
     mock_get.return_value = response([])
-    path = config_path(tmp_path, [{"repo": "example/recovery", "category": "incidents"}])
+    path = config_path(
+        tmp_path, [{"repo": "example/recovery", "category": "incidents"}]
+    )
 
     assert GitHubCollector(path, token="test-token").collect() == []
     mock_get.assert_called_once()
@@ -108,7 +112,9 @@ def test_empty_api_result_returns_no_items(tmp_path, mock_get):
 def test_failed_api_source_is_reported_after_retries(tmp_path, mock_get, monkeypatch):
     monkeypatch.setattr("agent.collectors.github_collector.time.sleep", lambda _: None)
     mock_get.side_effect = requests.Timeout("offline")
-    path = config_path(tmp_path, [{"repo": "example/recovery", "category": "incidents"}])
+    path = config_path(
+        tmp_path, [{"repo": "example/recovery", "category": "incidents"}]
+    )
     collector = GitHubCollector(path, token="test-token")
 
     assert collector.collect() == []

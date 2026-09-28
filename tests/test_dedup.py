@@ -35,7 +35,9 @@ class TestGetStats:
     def test_get_stats_with_data(self, dedup):
         dedup.mark_seen("https://a.com", source="rss", category="kubernetes", title="A")
         dedup.mark_seen("https://b.com", source="rss", category="linux", title="B")
-        dedup.mark_seen("https://c.com", source="github", category="kubernetes", title="C")
+        dedup.mark_seen(
+            "https://c.com", source="github", category="kubernetes", title="C"
+        )
 
         stats = dedup.get_stats()
         assert stats["by_source"]["rss"] == 2
@@ -66,7 +68,9 @@ def test_generated_result_survives_retry_until_url_is_marked_seen(dedup, tmp_db)
     assert Dedup(db_path=tmp_db).get_generated_result(values["source_url"]) == stored
 
     dedup.mark_seen(
-        values["source_url"], source=values["source"],
-        category=values["category"], title=values["title"],
+        values["source_url"],
+        source=values["source"],
+        category=values["category"],
+        title=values["title"],
     )
     assert dedup.get_generated_result(values["source_url"]) is None

@@ -24,7 +24,9 @@ from agent.collectors.rss_collector import CollectedItem
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "sources.yaml"
+_DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "config" / "sources.yaml"
+)
 _GITHUB_API_BASE = "https://api.github.com"
 _DEFAULT_LOOKBACK_DAYS = 30
 _PER_PAGE = 100  # max allowed by GitHub
@@ -43,7 +45,9 @@ class GitHubCollector:
             category: incidents
     """
 
-    def __init__(self, config_path: Path | None = None, token: str | None = None) -> None:
+    def __init__(
+        self, config_path: Path | None = None, token: str | None = None
+    ) -> None:
         self._config_path = config_path or _DEFAULT_CONFIG_PATH
         self._token = token or os.environ.get("GITHUB_TOKEN")
         self._session = self._build_session()
@@ -59,7 +63,9 @@ class GitHubCollector:
     # Public API
     # ------------------------------------------------------------------
 
-    def collect(self, lookback_days: int = _DEFAULT_LOOKBACK_DAYS) -> list[CollectedItem]:
+    def collect(
+        self, lookback_days: int = _DEFAULT_LOOKBACK_DAYS
+    ) -> list[CollectedItem]:
         """Fetch issues from all configured repos and return new items.
 
         Items whose URL has already been returned by a previous call are
@@ -84,7 +90,9 @@ class GitHubCollector:
             category = source.get("category", "")
 
             logger.info("Fetching issues from %s (labels=%s)", repo, labels)
-            issues = self._fetch_issues(repo, labels=labels, since=since, category=category)
+            issues = self._fetch_issues(
+                repo, labels=labels, since=since, category=category
+            )
             for issue in issues:
                 if issue.url in self._seen_urls:
                     logger.debug("Skipping duplicate URL: %s", issue.url)
@@ -108,16 +116,16 @@ class GitHubCollector:
     def _build_session(self) -> requests.Session:
         """Build a ``requests.Session`` with auth and accept headers."""
         session = requests.Session()
-        session.headers.update({
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        })
+        session.headers.update(
+            {
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+        )
         if self._token:
             session.headers["Authorization"] = f"Bearer {self._token}"
         else:
-            logger.warning(
-                "GITHUB_TOKEN not set — API requests are limited to 60/hour"
-            )
+            logger.warning("GITHUB_TOKEN not set — API requests are limited to 60/hour")
         return session
 
     def _load_sources(self) -> list[dict]:
@@ -208,12 +216,13 @@ class GitHubCollector:
                 response = self._session.get(url, params=params, timeout=30)
 
                 # Handle rate limiting
-                if response.status_code == 403 and "rate limit" in response.text.lower():
+                if (
+                    response.status_code == 403
+                    and "rate limit" in response.text.lower()
+                ):
                     reset_epoch = int(response.headers.get("X-RateLimit-Reset", 0))
                     wait = max(reset_epoch - time.time(), 1)
-                    logger.warning(
-                        "Rate limited — waiting %.0fs for reset", wait
-                    )
+                    logger.warning("Rate limited — waiting %.0fs for reset", wait)
                     time.sleep(wait)
                     continue
 

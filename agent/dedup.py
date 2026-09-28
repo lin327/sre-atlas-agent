@@ -74,9 +74,7 @@ class Dedup:
     """
 
     def __init__(self, db_path: str | None = None) -> None:
-        self._db_path = db_path or os.environ.get(
-            "DATABASE_PATH", "data/sre_atlas.db"
-        )
+        self._db_path = db_path or os.environ.get("DATABASE_PATH", "data/sre_atlas.db")
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -88,9 +86,7 @@ class Dedup:
             conn.executescript(_PRAGMAS)
             return conn
         except sqlite3.Error as exc:
-            raise DeduplicationError(
-                f"Failed to connect to database: {exc}"
-            ) from exc
+            raise DeduplicationError(f"Failed to connect to database: {exc}") from exc
 
     def _ensure_schema(self) -> None:
         conn = self._connect()
@@ -195,7 +191,16 @@ class Dedup:
                     (source_url, source, slug, title, category, confidence, content, content_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (source_url, source, slug, title, category, confidence, content, content_hash),
+                (
+                    source_url,
+                    source,
+                    slug,
+                    title,
+                    category,
+                    confidence,
+                    content,
+                    content_hash,
+                ),
             )
             row = conn.execute(
                 """
@@ -211,7 +216,10 @@ class Dedup:
                     f"Failed to persist generated result for {source_url}"
                 )
             result = dict(row)
-            if sha256(result["content"].encode("utf-8")).hexdigest() != result["content_hash"]:
+            if (
+                sha256(result["content"].encode("utf-8")).hexdigest()
+                != result["content_hash"]
+            ):
                 raise DeduplicationError(
                     f"Generated result checksum mismatch for {source_url}"
                 )

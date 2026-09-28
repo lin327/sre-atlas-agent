@@ -14,8 +14,11 @@ SCHEMA = json.loads(
 
 
 def _http_url(value: object) -> bool:
-    if (not isinstance(value, str) or not re.match(r"https?://", value, re.IGNORECASE)
-            or re.search(r"\s|[\x00-\x1f\x7f]", value)):
+    if (
+        not isinstance(value, str)
+        or not re.match(r"https?://", value, re.IGNORECASE)
+        or re.search(r"\s|[\x00-\x1f\x7f]", value)
+    ):
         return False
     try:
         parsed = urlsplit(value)
@@ -39,7 +42,9 @@ def _date_string(value: object) -> str | None:
 
 
 def _validate(value: object, schema: dict, path: str) -> None:
-    expected = {"object": dict, "array": list, "string": str, "boolean": bool}[schema["type"]]
+    expected = {"object": dict, "array": list, "string": str, "boolean": bool}[
+        schema["type"]
+    ]
     if not isinstance(value, expected):
         raise ValueError(f"{path}: expected {schema['type']}")  # noqa: TRY004 - schema violation
     if "enum" in schema and value not in schema["enum"]:
@@ -48,7 +53,10 @@ def _validate(value: object, schema: dict, path: str) -> None:
         if any(key not in value for key in schema.get("required", [])):
             raise ValueError(f"{path}: missing required field")
         properties = schema.get("properties", {})
-        if schema.get("additionalProperties") is False and value.keys() - properties.keys():
+        if (
+            schema.get("additionalProperties") is False
+            and value.keys() - properties.keys()
+        ):
             raise ValueError(f"{path}: unknown field")
         for key, item in value.items():
             if key in properties:
@@ -78,13 +86,19 @@ def normalize_frontmatter(metadata: dict, *, item, category: str) -> dict:
     if not isinstance(title, str) or not title.strip():
         raise ValueError("Frontmatter title must be a nonempty string")
     today = datetime.now(UTC).date().isoformat()
-    updated = _date_string(metadata.get("updated")) or _date_string(metadata.get("lastUpdated")) or today
+    updated = (
+        _date_string(metadata.get("updated"))
+        or _date_string(metadata.get("lastUpdated"))
+        or today
+    )
     confidence = str(metadata.get("confidence", "medium")).lower()
     page_type = metadata.get("type")
     if page_type not in SCHEMA["properties"]["type"]["enum"]:
         page_type = {
-            "runbooks": "runbook", "architectures": "architecture",
-            "incidents": "incident", "comparisons": "comparison",
+            "runbooks": "runbook",
+            "architectures": "architecture",
+            "incidents": "incident",
+            "comparisons": "comparison",
         }.get(category, "concept")
 
     # Preserve collected provenance even when the model invents or omits sources.
@@ -115,8 +129,11 @@ def normalize_frontmatter(metadata: dict, *, item, category: str) -> dict:
         "category": category,
         "type": page_type,
         "confidence": confidence if confidence in {"high", "medium", "low"} else "low",
-        "tags": list(dict.fromkeys(tag.strip() for tag in raw_tags
-                                   if isinstance(tag, str) and tag.strip())),
+        "tags": list(
+            dict.fromkeys(
+                tag.strip() for tag in raw_tags if isinstance(tag, str) and tag.strip()
+            )
+        ),
     }
     if isinstance(metadata.get("description"), str):
         normalized["description"] = metadata["description"].strip()

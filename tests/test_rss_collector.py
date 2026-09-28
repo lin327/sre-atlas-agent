@@ -39,9 +39,13 @@ def make_collector(tmp_path, monkeypatch, *, category: str = "linux") -> RSSColl
 
 def test_feed_download_uses_connect_and_read_timeout(tmp_path, monkeypatch):
     response = FakeResponse(
-        [(b"<?xml version='1.0'?><rss version='2.0'><channel><title>Example</title>"
-          b"<item><title>Linux guide</title><link>https://example.com/linux</link>"
-          b"<description>Kernel guide</description></item></channel></rss>")],
+        [
+            (
+                b"<?xml version='1.0'?><rss version='2.0'><channel><title>Example</title>"
+                b"<item><title>Linux guide</title><link>https://example.com/linux</link>"
+                b"<description>Kernel guide</description></item></channel></rss>"
+            )
+        ],
     )
     calls = []
 
@@ -77,10 +81,17 @@ def test_request_timeout_is_retried_then_reported(tmp_path, monkeypatch):
     assert collector.failed_count == 1
 
 
-def test_declared_oversized_response_is_rejected_before_streaming(tmp_path, monkeypatch):
-    response = FakeResponse([], {"Content-Length": str(rss_collector._MAX_FEED_BYTES + 1)})
+def test_declared_oversized_response_is_rejected_before_streaming(
+    tmp_path, monkeypatch
+):
+    response = FakeResponse(
+        [], {"Content-Length": str(rss_collector._MAX_FEED_BYTES + 1)}
+    )
     monkeypatch.setattr("agent.collectors.rss_collector._MAX_RETRIES", 1)
-    monkeypatch.setattr("agent.collectors.rss_collector.requests.get", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(
+        "agent.collectors.rss_collector.requests.get",
+        lambda *_args, **_kwargs: response,
+    )
     collector = make_collector(tmp_path, monkeypatch)
 
     assert collector.collect() == []
@@ -93,7 +104,10 @@ def test_streamed_response_is_stopped_at_byte_limit(tmp_path, monkeypatch):
     response = FakeResponse([b"123", b"45"])
     monkeypatch.setattr("agent.collectors.rss_collector._MAX_FEED_BYTES", 4)
     monkeypatch.setattr("agent.collectors.rss_collector._MAX_RETRIES", 1)
-    monkeypatch.setattr("agent.collectors.rss_collector.requests.get", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(
+        "agent.collectors.rss_collector.requests.get",
+        lambda *_args, **_kwargs: response,
+    )
     collector = make_collector(tmp_path, monkeypatch)
 
     assert collector.collect() == []

@@ -17,6 +17,7 @@ def get_claude_model() -> str:
     """Return the configured model, honoring runtime environment overrides."""
     return os.getenv("CLAUDE_MODEL", CLAUDE_MODEL)
 
+
 # Collection
 MAX_ITEMS_PER_SOURCE = 5
 MAX_PAGES_PER_RUN = 10

@@ -67,14 +67,10 @@ class CollectionScheduler:
         try:
             self._collection_fn()
             elapsed = (datetime.now(UTC) - start).total_seconds()
-            logger.info(
-                "=== Collection cycle finished in %.1fs ===", elapsed
-            )
+            logger.info("=== Collection cycle finished in %.1fs ===", elapsed)
         except Exception:
             elapsed = (datetime.now(UTC) - start).total_seconds()
-            logger.exception(
-                "=== Collection cycle FAILED after %.1fs ===", elapsed
-            )
+            logger.exception("=== Collection cycle FAILED after %.1fs ===", elapsed)
             # Do not re-raise — the scheduler keeps running.
 
     # ------------------------------------------------------------------

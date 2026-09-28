@@ -18,7 +18,9 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "sources.yaml"
+_DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "config" / "sources.yaml"
+)
 
 _MAX_RETRIES = 3
 _INITIAL_BACKOFF_SECONDS = 2.0
@@ -151,13 +153,9 @@ class RSSCollector:
                 # feedparser sets 'bozo' to 1 when there was a parse error
                 # but still populates entries when possible.
                 if feed.bozo and not feed.entries:
-                    raise ValueError(
-                        f"Feed parse error: {feed.bozo_exception!r}"
-                    )
+                    raise ValueError(f"Feed parse error: {feed.bozo_exception!r}")
 
-                logger.debug(
-                    "Fetched %d entries from %s", len(feed.entries), name
-                )
+                logger.debug("Fetched %d entries from %s", len(feed.entries), name)
                 return feed
 
             except (OSError, ValueError, requests.RequestException) as exc:

@@ -35,8 +35,13 @@ class TestClassifyItem:
 
     def test_categories_match_wiki_directories(self):
         assert ALLOWED_CATEGORIES == {
-            "linux", "docker", "kubernetes", "runbooks", "architectures",
-            "incidents", "comparisons",
+            "linux",
+            "docker",
+            "kubernetes",
+            "runbooks",
+            "architectures",
+            "incidents",
+            "comparisons",
         }
 
     def test_tags_contribute_to_classification(self):
@@ -56,13 +61,19 @@ class TestValidateCategory:
     def test_valid_category_passes(self, category):
         assert validate_category(category) == category
 
-    @pytest.mark.parametrize("category", ["nonexistent", "", "../linux", "/docker", "runbooks/../../linux"])
+    @pytest.mark.parametrize(
+        "category", ["nonexistent", "", "../linux", "/docker", "runbooks/../../linux"]
+    )
     def test_invalid_category_falls_back(self, category):
         assert validate_category(category) == "runbooks"
 
     @pytest.mark.parametrize(
         "category, expected",
-        [("runbook", "runbooks"), ("architecture", "architectures"), ("  ARCHITECTURE  ", "architectures")],
+        [
+            ("runbook", "runbooks"),
+            ("architecture", "architectures"),
+            ("  ARCHITECTURE  ", "architectures"),
+        ],
     )
     def test_legacy_aliases_map_to_wiki_directories(self, category, expected):
         assert validate_category(category) == expected

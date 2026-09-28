@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # Config loader
 # ---------------------------------------------------------------------------
 
+
 def load_config(path: str) -> dict[str, Any]:
     """Load and validate a ``sources.yaml`` file.
 
@@ -83,7 +84,12 @@ def normalize_source_url(url: str) -> str | None:
         port = parts.port
     except ValueError:
         return None
-    if scheme not in {"http", "https"} or not hostname or parts.username or parts.password:
+    if (
+        scheme not in {"http", "https"}
+        or not hostname
+        or parts.username
+        or parts.password
+    ):
         return None
 
     hostname = hostname.lower()
@@ -235,7 +241,7 @@ def _write_page_atomically(output_dir: Path, page: Any) -> tuple[str, Path]:
 
     while True:
         suffix = "" if number == 1 else f"-{number}"
-        slug = f"{page.slug[:60 - len(suffix)].rstrip('-')}{suffix}"
+        slug = f"{page.slug[: 60 - len(suffix)].rstrip('-')}{suffix}"
         target = category_dir / f"{slug}.mdx"
         if target.is_file():
             if target.read_text(encoding="utf-8") == page.content:
@@ -246,8 +252,12 @@ def _write_page_atomically(output_dir: Path, page: Any) -> tuple[str, Path]:
         temporary_path: Path | None = None
         try:
             with NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=category_dir,
-                prefix=".pending-", suffix=".mdx", delete=False,
+                mode="w",
+                encoding="utf-8",
+                dir=category_dir,
+                prefix=".pending-",
+                suffix=".mdx",
+                delete=False,
             ) as temporary:
                 temporary.write(page.content)
                 temporary.flush()
@@ -257,7 +267,10 @@ def _write_page_atomically(output_dir: Path, page: Any) -> tuple[str, Path]:
                 os.link(temporary_path, target)
                 return slug, target
             except FileExistsError:
-                if target.is_file() and target.read_text(encoding="utf-8") == page.content:
+                if (
+                    target.is_file()
+                    and target.read_text(encoding="utf-8") == page.content
+                ):
                     return slug, target
                 number += 1
         finally:
@@ -298,6 +311,7 @@ def _log_pipeline_summary(result: PipelineResult) -> None:
 # Pipeline
 # ---------------------------------------------------------------------------
 
+
 class AtlasPipeline:
     """Orchestrate one full collect -> dedup -> generate -> output cycle.
 
@@ -333,8 +347,10 @@ class AtlasPipeline:
         self._output_dir = Path(output_dir)
         if os.getenv("PUBLISH_CANONICAL", "false") != "true":
             parts = self._output_dir.resolve().parts
-            if any(parts[i:i + 2] == ("src", "pages") for i in range(len(parts) - 1)):
-                raise ValueError("Draft output must not be under src/pages; use output/ instead.")
+            if any(parts[i : i + 2] == ("src", "pages") for i in range(len(parts) - 1)):
+                raise ValueError(
+                    "Draft output must not be under src/pages; use output/ instead."
+                )
             self._output_dir /= "inbox"
         self._dry_run = dry_run
         self._dedup = dedup
@@ -395,12 +411,18 @@ class AtlasPipeline:
 
         if self._dry_run:
             for item in new_items:
-                logger.info("[dry-run] [%s] %s (%s)", _item_category(item), item.title, item.url)
+                logger.info(
+                    "[dry-run] [%s] %s (%s)", _item_category(item), item.title, item.url
+                )
             if not self._generate_anyway:
-                logger.info("[dry-run] 仅预览采集与分类；不调用 Claude，不写 MDX 或数据库。")
+                logger.info(
+                    "[dry-run] 仅预览采集与分类；不调用 Claude，不写 MDX 或数据库。"
+                )
                 _log_pipeline_summary(result)
                 return result
-            logger.warning("[dry-run --generate-anyway] 将调用付费 Claude API 并写 MDX，不写数据库。")
+            logger.warning(
+                "[dry-run --generate-anyway] 将调用付费 Claude API 并写 MDX，不写数据库。"
+            )
 
         # 3–5. Generate, persist, write, then mark seen per item. ---------
         logger.info("Processing %d selected item(s) one at a time...", len(new_items))
@@ -415,7 +437,9 @@ class AtlasPipeline:
                         cached = cached_result
                 except Exception:
                     result.failed += 1
-                    logger.exception("Failed to load cached generation for %s", item.url)
+                    logger.exception(
+                        "Failed to load cached generation for %s", item.url
+                    )
                     continue
 
             if cached is not None:
@@ -443,7 +467,9 @@ class AtlasPipeline:
                     continue
                 if page is None:
                     result.failed += 1
-                    logger.error("Generation or quality validation failed for %s", item.url)
+                    logger.error(
+                        "Generation or quality validation failed for %s", item.url
+                    )
                     continue
                 result.generated += 1
 
@@ -515,6 +541,7 @@ class AtlasPipeline:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

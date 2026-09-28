@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class GeneratedPage:
     """Immutable output of a single generation run."""
+
     slug: str
     title: str
     content: str  # full markdown including frontmatter
@@ -193,9 +194,7 @@ class ContentGenerator:
             try:
                 page = self.generate_page(item)
             except Exception:
-                logger.exception(
-                    "Unhandled error generating page for %r", item.title
-                )
+                logger.exception("Unhandled error generating page for %r", item.title)
                 page = None
 
             if page is not None:
@@ -245,10 +244,9 @@ class ContentGenerator:
                 anthropic.APIConnectionError,
                 anthropic.APITimeoutError,
             ) as exc:
-                wait = self.BASE_BACKOFF ** attempt
+                wait = self.BASE_BACKOFF**attempt
                 logger.warning(
-                    "API error on attempt %d/%d for %r: %s  "
-                    "(retrying in %.1fs)",
+                    "API error on attempt %d/%d for %r: %s  (retrying in %.1fs)",
                     attempt,
                     self.MAX_RETRIES,
                     item.title,
@@ -313,7 +311,12 @@ class ContentGenerator:
         confidence = metadata["confidence"]
         slug = _slugify(title, item.url)
         validate_frontmatter(metadata, slug)
-        content = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False) + "---\n" + body
+        content = (
+            "---\n"
+            + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)
+            + "---\n"
+            + body
+        )
 
         return GeneratedPage(
             slug=slug,
@@ -351,7 +354,10 @@ _PLACEHOLDER_PATTERNS: list[re.Pattern[str]] = [
 
 
 def validate_content(
-    raw: str, *, slug: str | None = None, source_url: str = "",
+    raw: str,
+    *,
+    slug: str | None = None,
+    source_url: str = "",
 ) -> tuple[bool, list[str]]:
     """Validate generated content against quality criteria.
 
@@ -371,10 +377,15 @@ def validate_content(
         if _ISSUE_TITLE.search(title.strip()):
             issues.append("Title resembles a GitHub Issue")
         candidate = _slugify(title, source_url) if slug is None else slug
-        candidates = [candidate, metadata["slug"]] if "slug" in metadata else [candidate]
+        candidates = (
+            [candidate, metadata["slug"]] if "slug" in metadata else [candidate]
+        )
         for candidate in candidates:
-            if (not isinstance(candidate, str) or not _VALID_SLUG.fullmatch(candidate)
-                    or _slugify(candidate) != candidate):
+            if (
+                not isinstance(candidate, str)
+                or not _VALID_SLUG.fullmatch(candidate)
+                or _slugify(candidate) != candidate
+            ):
                 issues.append("Invalid slug: expected [a-z0-9-]{4,60}")
                 break
     body = body.strip()
@@ -384,8 +395,7 @@ def validate_content(
         issues.append("Body content is empty")
     elif len(body) < _MIN_BODY_LENGTH:
         issues.append(
-            f"Body content is too short ({len(body)} chars, "
-            f"minimum {_MIN_BODY_LENGTH})"
+            f"Body content is too short ({len(body)} chars, minimum {_MIN_BODY_LENGTH})"
         )
 
     # 6. Must not contain placeholder text.
@@ -393,7 +403,9 @@ def validate_content(
         if pattern.search(body):
             issues.append(f"Placeholder text detected: {pattern.pattern!r}")
 
-    prose = re.sub(r"```.*?```|~~~.*?~~~|`[^`\n]*`|<!--.*?-->", "", body, flags=re.DOTALL)
+    prose = re.sub(
+        r"```.*?```|~~~.*?~~~|`[^`\n]*`|<!--.*?-->", "", body, flags=re.DOTALL
+    )
     if not re.search(r"\[\[[a-z0-9-]{4,60}(?:\|[^\]\n]+)?\]\]", prose):
         issues.append("Body has no wikilink")
 
@@ -407,7 +419,8 @@ def _split_frontmatter(raw: str) -> tuple[dict, str]:
     """Parse YAML once per validation/normalization, preserving the body."""
     match = re.search(
         r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)(.*)\Z",
-        raw.lstrip(), re.DOTALL,
+        raw.lstrip(),
+        re.DOTALL,
     )
     if not match:
         raise ValueError("Missing or unclosed YAML frontmatter")
